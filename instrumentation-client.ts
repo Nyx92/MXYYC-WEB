@@ -13,6 +13,33 @@ if (process.env.NEXT_PUBLIC_VERCEL_ENV) {
     dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
     environment: process.env.NEXT_PUBLIC_VERCEL_ENV,
     tracesSampleRate: 1.0,
+    // Mirrors sentry.server.config.ts's beforeSend, but the browser can't
+    // hold DISCORD_ALERTS_WEBHOOK_URL (it'd ship in the public bundle),
+    // so this relays through /api/internal/log-error instead, which posts to
+    // Discord server-side. Fire-and-forget with keepalive so the request
+    // survives a page unload right after the error; never blocks the event
+    // from still reaching Sentry.
+    beforeSend(event) {
+      try {
+        const message =
+          event.exception?.values?.[0]?.value ??
+          event.message ??
+          "Unknown error";
+        fetch("/api/internal/log-error", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          keepalive: true,
+          body: JSON.stringify({
+            message,
+            environment: event.environment ?? "unknown",
+            url: event.request?.url ?? window.location.href,
+          }),
+        }).catch(() => {});
+      } catch {
+        // Never block the event over a reporting failure.
+      }
+      return event;
+    },
   });
 }
 

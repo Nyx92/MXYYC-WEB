@@ -45,6 +45,11 @@ NEXT_PUBLIC_USD_TO_SGD_RATE="1.29"
 
 # Card pricing (JustTCG — see "Cron jobs (card pricing)" below)
 JUSTTCG_API_KEY=""
+
+# Discord + Sentry (optional — see "Monitoring" below)
+DISCORD_ALERTS_WEBHOOK_URL=""
+SENTRY_AUTH_TOKEN=""
+SENTRY_ORG=""
 ```
 
 ---
@@ -181,7 +186,13 @@ Card market prices come from [JustTCG](https://justtcg.com). Two separate jobs, 
 
 Both need the same `Authorization: Bearer <CRON_SECRET>` header as the other cron endpoints above. Add both to cron-job.org alongside the existing two jobs, at their respective cadences.
 
-Set `DISCORD_CRON_ALERTS_WEBHOOK_URL` (optional) to post a Discord alert on every run of either job — success or failure, including a run that returned 200 but had some cards fail. Leave it unset to skip Discord entirely.
+Set `DISCORD_ALERTS_WEBHOOK_URL` (optional) to post a Discord alert on every run of either job — success or failure, including a run that returned 200 but had some cards fail. Leave it unset to skip Discord entirely.
+
+### Cron jobs (performance report)
+
+- `GET /api/cron/report-performance` — pulls a p95 latency / throughput / error-rate summary from Sentry's API for the period since the last run and posts it to `DISCORD_ALERTS_WEBHOOK_URL` (same channel as the pricing jobs above). Recommended cadence: hourly.
+
+Needs the same `Authorization: Bearer <CRON_SECRET>` header as the other cron endpoints, plus `SENTRY_AUTH_TOKEN` (a Sentry auth token with `org:read`/`project:read`/`event:read` scopes) and `SENTRY_ORG` (your Sentry org slug). Missing either posts a failure alert to Discord and returns 500 rather than failing silently.
 
 ---
 
@@ -192,6 +203,15 @@ Set `DISCORD_CRON_ALERTS_WEBHOOK_URL` (optional) to post a Discord alert on ever
 - `https://mxyyc-grading.vercel.app/api/health`
 
 Alerts are integrated with Discord.
+
+### Sentry (errors + performance)
+
+Sentry ([sentry.server.config.ts](sentry.server.config.ts), [sentry.edge.config.ts](sentry.edge.config.ts), [instrumentation-client.ts](instrumentation-client.ts)) captures errors across all three runtimes (server, edge, browser). Sentry's own Discord delivery needs a paid plan, so this repo relays around it for free instead:
+
+- **Errors** — every captured error (caught or uncaught) is posted to `DISCORD_ALERTS_WEBHOOK_URL` via each runtime's `beforeSend` hook. The browser can't hold that webhook URL directly (it would ship in the public bundle), so it relays through `POST /api/internal/log-error`, which is rate limited per IP (20/min) since it's an unauthenticated public endpoint.
+- **Performance** — see the "Cron jobs (performance report)" section above. Posting one Discord message per transaction isn't viable (Discord caps webhooks at ~30 messages/minute, Sentry can produce far more), so this is a periodic digest instead of a per-event alert.
+
+Both share `DISCORD_ALERTS_WEBHOOK_URL` and are optional — leave it unset to skip Discord and keep using Sentry's own dashboard only.
 
 ---
 

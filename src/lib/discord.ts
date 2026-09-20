@@ -116,13 +116,58 @@ export async function resolveCollectionNotification({
   await Promise.all(messageIds.map((id) => editDiscordMessage(id, payload)));
 }
 
-// Alerts for the two price-sync cron jobs (refresh-prices, backfill-prices),
-// posted to their own webhook — DISCORD_CRON_ALERTS_WEBHOOK_URL — separate
-// from the collection-request one above, so cron health can live in its own
-// channel. Fires on every run, success or failure: a run can return HTTP 200
-// with some cards failed (e.g. a JustTCG outage mid-run), which cron-job.org's
-// own status-code check can't see. `ok` should reflect that per-card failure
-// count, not just "did the route return without throwing".
+// Posts every Sentry-captured error (caught or uncaught, any runtime) to
+// DISCORD_ALERTS_WEBHOOK_URL — called from each Sentry `beforeSend` hook
+// (see sentry.server.config.ts, sentry.edge.config.ts,
+// instrumentation-client.ts). Shares the same webhook as postCronResult
+// below, kept separate from the collection-request one (DISCORD_WEBHOOK_URL).
+export async function postErrorAlert({
+  message,
+  runtime,
+  environment,
+  url,
+}: {
+  message: string;
+  runtime: "server" | "edge" | "browser";
+  environment: string;
+  url?: string;
+}): Promise<void> {
+  const webhookUrl = process.env.DISCORD_ALERTS_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        embeds: [
+          {
+            title: `🚨 Error — ${runtime}`,
+            description: message.slice(0, 4000),
+            color: 0xef4444,
+            fields: [
+              { name: "Environment", value: environment, inline: true },
+              ...(url ? [{ name: "URL", value: url.slice(0, 1000), inline: true }] : []),
+            ],
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }),
+    });
+    if (!res.ok) console.error("[discord] error alert post failed:", res.status, await res.text());
+  } catch (err) {
+    console.error("[discord] error alert post failed:", err);
+  }
+}
+
+// Alerts for cron job results (refresh-prices, backfill-prices,
+// report-performance), posted to DISCORD_ALERTS_WEBHOOK_URL — the same
+// webhook postErrorAlert above uses, separate from the collection-request one
+// (DISCORD_WEBHOOK_URL). Fires on every run, success or failure: a run can
+// return HTTP 200 with some cards failed (e.g. a JustTCG outage mid-run),
+// which cron-job.org's own status-code check can't see. `ok` should reflect
+// that per-card failure count, not just "did the route return without
+// throwing".
 export async function postCronResult({
   job,
   ok,
@@ -134,7 +179,7 @@ export async function postCronResult({
   summary: string;
   errors?: string[];
 }): Promise<void> {
-  const url = process.env.DISCORD_CRON_ALERTS_WEBHOOK_URL;
+  const url = process.env.DISCORD_ALERTS_WEBHOOK_URL;
   if (!url) return;
 
   try {
