@@ -9,12 +9,7 @@
 // it skips a redundant client-side fetch of data it already has.
 
 import type { MarketplaceFilterState } from "./FilterBar";
-
-function sameSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sorted = [...b].sort();
-  return [...a].sort().every((v, i) => v === sorted[i]);
-}
+import { sameSet } from "@/lib/sameSet";
 
 export function isSameMarketplaceView(
   a: MarketplaceFilterState,

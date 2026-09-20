@@ -7,12 +7,7 @@
 // can skip a redundant client-side fetch of data it already has.
 
 import type { AuctionFilterState } from "./AuctionFilterBar";
-
-function sameSet(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sorted = [...b].sort();
-  return [...a].sort().every((v, i) => v === sorted[i]);
-}
+import { sameSet } from "@/lib/sameSet";
 
 export function isSameAuctionsView(a: AuctionFilterState, b: AuctionFilterState): boolean {
   return (
