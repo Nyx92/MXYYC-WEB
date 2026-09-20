@@ -29,7 +29,6 @@
     ]
   },
   "dependencies": {
-    "@aws-sdk/client-sns": "^3.1131.0",
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.4",
     "@mui/material": "^7.3.4",

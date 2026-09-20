@@ -9,17 +9,13 @@
  * waiting for a text that never arrives.
  *
  * Environment variables:
- *   SMS_PROVIDER                 — "aws" (default) or "twilio"
+ *   SMS_PROVIDER                 — "twilio" (the only supported provider)
  *   SMS_DEV_MODE                 — "true" logs to console instead of sending
  *                                  (useful in local dev, avoids burning paid
- *                                  Twilio/SNS sends while iterating)
- *   TWILIO_ACCOUNT_SID           — required when SMS_PROVIDER=twilio
- *   TWILIO_AUTH_TOKEN            — required when SMS_PROVIDER=twilio
- *   TWILIO_MESSAGING_SERVICE_SID — required when SMS_PROVIDER=twilio
- *   AWS_REGION                   — used when SMS_PROVIDER=aws (default
- *                                  "us-east-1"); credentials come from the
- *                                  standard AWS SDK provider chain (env vars
- *                                  / IAM role), never hardcoded here.
+ *                                  Twilio sends while iterating)
+ *   TWILIO_ACCOUNT_SID           — required
+ *   TWILIO_AUTH_TOKEN            — required
+ *   TWILIO_MESSAGING_SERVICE_SID — required
  */
 
 export interface SendSmsOptions {
@@ -32,7 +28,6 @@ export interface SendSmsResult {
   error?: string;
 }
 
-const SMS_PROVIDER = (process.env.SMS_PROVIDER ?? "aws").toLowerCase();
 const SMS_DEV_MODE = process.env.SMS_DEV_MODE === "true";
 
 export async function sendSms(opts: SendSmsOptions): Promise<SendSmsResult> {
@@ -42,13 +37,7 @@ export async function sendSms(opts: SendSmsOptions): Promise<SendSmsResult> {
   }
 
   try {
-    if (SMS_PROVIDER === "twilio") {
-      await sendViaTwilio(opts);
-    } else if (SMS_PROVIDER === "aws") {
-      await sendViaAwsSns(opts);
-    } else {
-      throw new Error(`Unknown SMS_PROVIDER "${SMS_PROVIDER}" — expected "aws" or "twilio"`);
-    }
+    await sendViaTwilio(opts);
     return { success: true };
   } catch (err) {
     console.error("[sms] Failed to send to", opts.to, err);
@@ -68,8 +57,6 @@ async function sendViaTwilio(opts: SendSmsOptions): Promise<void> {
     );
   }
 
-  // Lazy import — keeps the twilio SDK (and its network/client setup) out of
-  // the module graph entirely for deployments that only ever use SMS_PROVIDER=aws.
   const { default: Twilio } = await import("twilio");
   const client = Twilio(accountSid, authToken);
 
@@ -78,26 +65,4 @@ async function sendViaTwilio(opts: SendSmsOptions): Promise<void> {
     messagingServiceSid,
     body: opts.body,
   });
-}
-
-// ── AWS SNS ──────────────────────────────────────────────────────────────────
-
-async function sendViaAwsSns(opts: SendSmsOptions): Promise<void> {
-  const { SNSClient, PublishCommand } = await import("@aws-sdk/client-sns");
-  const client = new SNSClient({ region: process.env.AWS_REGION ?? "us-east-1" });
-
-  await client.send(
-    new PublishCommand({
-      PhoneNumber: opts.to,
-      Message: opts.body,
-      MessageAttributes: {
-        "AWS.SNS.SMS.SMSType": {
-          DataType: "String",
-          // "Transactional" prioritizes delivery reliability over cost —
-          // correct for OTP codes, which are useless if delayed.
-          StringValue: "Transactional",
-        },
-      },
-    })
-  );
 }
