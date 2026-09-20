@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 // Matches the signup form's own rule (src/app/auth/signup/page.tsx) so a
 // reset can't produce a weaker password than signup would ever allow.
@@ -23,8 +23,7 @@ export async function POST(req: NextRequest) {
   // of entropy (not realistically brute-forceable), so this guard is mainly
   // DoS/abuse protection rather than a brute-force defense. In-memory
   // stopgap (see src/lib/rateLimit.ts).
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const ip = forwardedFor?.split(",")[0]?.trim() || "unknown";
+  const ip = getClientIp(req);
   const { allowed } = checkRateLimit(`reset-password:${ip}`, {
     limit: 10,
     windowMs: 60 * 60 * 1000,

@@ -18,7 +18,10 @@ vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/sms", () => ({ sendSms: mockSendSms }));
-vi.mock("@/lib/rateLimit", () => ({ checkRateLimit: mockCheckRateLimit }));
+vi.mock("@/lib/rateLimit", () => ({
+  checkRateLimit: mockCheckRateLimit,
+  getClientIp: () => "unknown",
+}));
 
 import { POST } from "@/app/api/user/verify/phone/request/route";
 

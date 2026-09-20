@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { sendSms } from "@/lib/sms";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { normalizePhoneNumber, isValidE164 } from "@/lib/phone";
 import {
   VERIFICATION_CODE_TTL_MS,
@@ -31,8 +31,7 @@ export async function POST(req: NextRequest) {
   const userId = session.user.id;
 
   // 🔒 Per-user + per-IP rate limits. In-memory stopgap (see src/lib/rateLimit.ts).
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const ip = forwardedFor?.split(",")[0]?.trim() || "unknown";
+  const ip = getClientIp(req);
 
   const userLimit = checkRateLimit(`phone-verify-request:user:${userId}`, {
     limit: 3,

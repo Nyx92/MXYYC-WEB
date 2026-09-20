@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { sendEmailAsync, buildPasswordResetEmail } from "@/lib/email";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -29,8 +29,7 @@ export async function POST(req: NextRequest) {
   // Resend send (and flood a victim's inbox) on every request, since this
   // endpoint is intentionally unauthenticated. In-memory stopgap (see
   // src/lib/rateLimit.ts).
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const ip = forwardedFor?.split(",")[0]?.trim() || "unknown";
+  const ip = getClientIp(req);
   const { allowed } = checkRateLimit(`forgot-password:${ip}`, {
     limit: 10,
     windowMs: 60 * 60 * 1000,

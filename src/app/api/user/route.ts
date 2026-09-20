@@ -3,15 +3,14 @@ import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { isValidE164 } from "@/lib/phone";
 
 // This function is to store user details on successful sign up
 export async function POST(req: Request) {
   // 🔒 Rate limit signups by IP — 10 per hour. Stops a script from mass
   // creating accounts; in-memory stopgap (see src/lib/rateLimit.ts).
-  const forwardedFor = req.headers.get("x-forwarded-for");
-  const ip = forwardedFor?.split(",")[0]?.trim() || "unknown";
+  const ip = getClientIp(req);
   const { allowed } = checkRateLimit(`signup:${ip}`, {
     limit: 10,
     windowMs: 60 * 60 * 1000, // 1 hour

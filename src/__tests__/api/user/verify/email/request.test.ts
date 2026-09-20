@@ -20,7 +20,10 @@ vi.mock("@/lib/email", () => ({
   sendEmail: mockSendEmail,
   buildEmailVerificationCodeEmail: vi.fn().mockReturnValue("<html></html>"),
 }));
-vi.mock("@/lib/rateLimit", () => ({ checkRateLimit: mockCheckRateLimit }));
+vi.mock("@/lib/rateLimit", () => ({
+  checkRateLimit: mockCheckRateLimit,
+  getClientIp: () => "unknown",
+}));
 
 import { POST } from "@/app/api/user/verify/email/request/route";
 
