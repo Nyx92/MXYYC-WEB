@@ -61,10 +61,7 @@ export function usdToSgdCents(usdDollars: number): number {
   return dollarsToCents(usdDollars * rate);
 }
 
-export function formatPrice(
-  dollars: number | null | undefined,
-  opts: { fallback?: string } = {}
-): string {
-  if (dollars == null) return opts.fallback ?? "—";
+export function formatPrice(dollars: number | null | undefined): string {
+  if (dollars == null) return "—";
   return `S$${dollars.toFixed(2)}`;
 }

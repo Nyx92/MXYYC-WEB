@@ -79,8 +79,4 @@ describe("formatPrice", () => {
     expect(formatPrice(null)).toBe("—");
     expect(formatPrice(undefined)).toBe("—");
   });
-
-  it("accepts a custom fallback", () => {
-    expect(formatPrice(null, { fallback: "N/A" })).toBe("N/A");
-  });
 });
