@@ -143,6 +143,28 @@ This runs `script/reset-db.sh`: it pushes `schema.prisma` and reseeds mock data,
 
 ---
 
+### Card catalog (Pokémon / Riftbound)
+
+The `PokemonCardCatalog` and `RiftboundCardCatalog` tables hold every known
+card (not only listed ones). They are filled from a separate, manual CLI
+project, **tcg-index-sync** (`/home/buba/projects/tcg-index-sync`), which
+builds the card lists and fills in missing TCGPlayer ids. Full guide:
+[`tcg-index-sync/README.md`](../tcg-index-sync/README.md).
+
+In short:
+
+```bash
+# in tcg-index-sync
+pnpm sync:pokemon && pnpm sync:riftbound
+# in this repo, once per new delta file
+pnpm import:catalog-delta /home/buba/projects/tcg-index-sync/output/<delta-file>.json
+```
+
+The importer (`src/lib/catalogDeltaImport.ts`) skips cards without a
+`tcgPlayerId` and upserts by the stable source id, so re-running is safe.
+After an import, the pricing crons below pick up the new cards automatically
+(backfill: once per card; refresh: daily).
+
 ## Stripe setup
 
 ### Webhook (local dev)
@@ -203,7 +225,7 @@ Both endpoints below are pinged **every minute**:
 Card market prices come from [JustTCG](https://justtcg.com). Two separate jobs, on two very different schedules, split the cost so daily use stays cheap even though a full price history pull is not:
 
 - `GET /api/cron/refresh-prices` — **run daily.** Cheap: batches raw prices for the whole catalog (~100 cards/call) and only calls JustTCG per-card for cards with an actual graded listing. Only ever writes today's price.
-- `GET /api/cron/backfill-prices?limit=500` — **run twice a month.** Expensive: one call per card, pulling up to a year of daily history. Self-resuming — a card is marked done once it succeeds, so this only ever pulls a given card's deep history once, no matter how many times the job runs. Catalog-wide and listing-prioritized: a card someone's actually selling is backfilled before one that's only in the catalog. Safe to call again the same day to keep working through a large catalog; each call defaults to 500 cards and caps at 950 to stay under JustTCG's daily request limit.
+- `GET /api/cron/backfill-prices?limit=500` — **run twice a month.** Expensive: one call per card, pulling up to a year of daily history. Self-resuming — a card is marked done once it succeeds, so this only ever pulls a given card's deep history once, no matter how many times the job runs. Catalog-wide and listing-prioritized: a card someone's actually selling is backfilled before one that's only in the catalog. Safe to call again the same day to keep working through a large catalog; each call defaults to 500 cards and caps at 950 to stay under JustTCG's daily request limit. A card that fails 5 times leaves the queue (`priceBackfillAttempts`; reset it to 0 to retry) and is counted as "Gave up" in the Discord summary.
 
 Both need the same `Authorization: Bearer <CRON_SECRET>` header as the other cron endpoints above. Add both to cron-job.org alongside the existing two jobs, at their respective cadences.
 
