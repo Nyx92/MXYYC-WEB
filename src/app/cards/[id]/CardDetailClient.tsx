@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useParams, useRouter } from "next/navigation";
 import { Box, Typography, IconButton, Snackbar, Alert, Button } from "@mui/material";
-import { motion } from "framer-motion";
+import { fadeInSx } from "@/app/utils/fadeIn";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import BookmarkIcon from "@mui/icons-material/Bookmark";
 import BookmarkBorderIcon from "@mui/icons-material/BookmarkBorder";
@@ -289,11 +289,7 @@ export default function CardDetailClient({
       }}
     >
       {/* 1. Back button fades in from the left before the main layout renders. */}
-      <motion.div
-        initial={{ opacity: 0, x: -12 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-      >
+      <Box sx={fadeInSx({ duration: 0.3, x: -12, y: 0 })}>
         <Box
           onClick={() => router.push("/")}
           sx={{
@@ -311,7 +307,7 @@ export default function CardDetailClient({
             Back to Home
           </Typography>
         </Box>
-      </motion.div>
+      </Box>
 
       <Box
         sx={{
@@ -323,20 +319,17 @@ export default function CardDetailClient({
       >
         {/* 2. Three columns enter sequentially: image from left → metadata from
                below (0.1 s) → BuyBox from right (0.15 s). Columns use flex-basis
-               so the motion wrapper is the correct flex child width. */}
+               so the animated wrapper is the correct flex child width. */}
         {/* ===== COL 1: image ===== */}
-        {/* Box (not a plain motion.div with an inline `style`) so the flex-basis
+        {/* Box (not a plain div with an inline `style`) so the flex-basis
             can actually be responsive via sx breakpoints: a plain inline `style`
             can't express "0 0 360px" on desktop but full-width on mobile, and
             without the xs width override this column collapses to the width of
             its smallest child (the watchlist icon) once flexDirection switches
             to "column" below md. */}
         <Box
-          component={motion.div}
-          initial={{ opacity: 0, x: -24 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.45, ease: "easeOut" }}
           sx={{
+            ...fadeInSx({ duration: 0.45, x: -24, y: 0 }),
             flex: { xs: "0 0 auto", md: "0 0 360px" },
             width: { xs: "100%", md: "auto" },
             maxWidth: "100%",
@@ -459,11 +452,7 @@ export default function CardDetailClient({
 
         {/* ===== COL 2: title + metadata ===== */}
         <Box
-          component={motion.div}
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45, ease: "easeOut", delay: 0.1 }}
-          sx={{ flex: 1, minWidth: 0, width: { xs: "100%", md: "auto" } }}
+          sx={{ ...fadeInSx({ delay: 0.1, duration: 0.45, y: 24 }), flex: 1, minWidth: 0, width: { xs: "100%", md: "auto" } }}
         >
         <Box
           sx={{
@@ -522,11 +511,8 @@ export default function CardDetailClient({
 
         {/* ===== COL 3: buybox + market chart ===== */}
         <Box
-          component={motion.div}
-          initial={{ opacity: 0, x: 24 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.45, ease: "easeOut", delay: 0.15 }}
           sx={{
+            ...fadeInSx({ delay: 0.15, duration: 0.45, x: 24, y: 0 }),
             flex: { xs: "0 0 auto", md: "0 0 500px" },
             width: { xs: "100%", md: "auto" },
             maxWidth: "100%",

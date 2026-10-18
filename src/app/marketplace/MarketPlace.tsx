@@ -10,6 +10,7 @@ import {
   Button,
 } from "@mui/material";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
+import { fadeInSx } from "@/app/utils/fadeIn";
 import SearchIcon from "@mui/icons-material/Search";
 import { useFuzzySearch } from "@/app/utils/account/useFuzzySearch";
 import { useAuth } from "@/app/hooks/useAuth";
@@ -82,6 +83,8 @@ export default function Marketplace({
   // once per keystroke (see the effect below for why keying on `search`
   // directly caused overlapping, doubled-up render generations).
   const [gridKey, setGridKey] = useState(0);
+  // The server-rendered first grid; see the AnimatePresence below.
+  const firstGrid = gridKey === 0;
   const [page, setPage] = useState(1);
   // Bumped whenever filters/search change; a load-more response tagged with
   // an older version belongs to the previous query and is dropped instead of
@@ -352,7 +355,12 @@ export default function Marketplace({
                      briefly rendering both generations' tiles at once. gridKey only
                      bumps when a fetch actually resolves and cards are applied (see
                      the effect above), so at most one exit/enter cycle is ever live. */}
-              <AnimatePresence mode="wait">
+              {/* initial={!firstGrid}: the first grid is in the server HTML, so it
+                  must not start hidden until the JavaScript loads — its stagger is
+                  the CSS fade on each tile instead. Later grids (filter changes;
+                  the loading spinner remounts this) keep framer's staggered
+                  entrance and exit. */}
+              <AnimatePresence mode="wait" initial={!firstGrid}>
                 <motion.div
                   key={gridKey}
                   variants={gridVariants}
@@ -364,6 +372,7 @@ export default function Marketplace({
                   {filteredProducts.length > 0 ? (
                     filteredProducts.map((product, i) => (
                       <motion.div key={product.id} variants={cardVariants}>
+                        <Box sx={firstGrid ? fadeInSx({ delay: i * 0.04, duration: 0.3, y: 16 }) : undefined}>
                         <CardListItem
                           card={product}
                           watchlisted={watchlistedIds.has(product.id)}
@@ -371,15 +380,18 @@ export default function Marketplace({
                           // The first row is on screen at load — don't wait for the lazy-load check.
                           eager={i < 4}
                         />
+                        </Box>
                       </motion.div>
                     ))
                   ) : (
                     <motion.div variants={cardVariants} style={{ width: "100%" }}>
+                      <Box sx={firstGrid ? fadeInSx({ duration: 0.3, y: 16 }) : undefined}>
                       <EmptyState
                         icon={<SearchIcon sx={{ fontSize: 40, color: "rgba(255,255,255,0.5)" }} />}
                         title="No cards match your filters."
                         tone="light"
                       />
+                      </Box>
                     </motion.div>
                   )}
                 </motion.div>

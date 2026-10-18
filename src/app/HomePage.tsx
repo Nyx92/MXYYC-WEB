@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Box, Tabs, Tab } from "@mui/material";
-import { fadeUpSx } from "./home/fadeUp";
+import { fadeInSx } from "@/app/utils/fadeIn";
 import HomeFeatured, { type FeaturedData } from "./home/HomeFeatured";
 import Carousell from "./home/carousell/Carousell";
 import DuckReveal from "./home/DuckReveal";
@@ -55,7 +55,7 @@ export default function HomePage({ initialFeatured }: { initialFeatured: Feature
       <Carousell />
 
       {/* Tab Bar Section */}
-      <Box sx={fadeUpSx(0.15)}>
+      <Box sx={fadeInSx({ delay: 0.15, duration: 0.45, y: 20 })}>
         <Box sx={{ mt: 4, px: { xs: 2, md: 4 } }}>
           <Box sx={{ display: "flex", justifyContent: "center" }}>
             <Tabs

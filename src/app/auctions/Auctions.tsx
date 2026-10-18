@@ -10,6 +10,7 @@ import {
   Typography,
 } from "@mui/material";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
+import { fadeInSx, SPRING_EASING } from "@/app/utils/fadeIn";
 import SearchIcon from "@mui/icons-material/Search";
 import GavelIcon from "@mui/icons-material/Gavel";
 import { useFuzzySearch } from "@/app/utils/account/useFuzzySearch";
@@ -76,6 +77,8 @@ export default function Auctions({
   const [auctions, setAuctions] = useState<AuctionItem[]>(initialAuctions);
   // Same settle-based key as MarketPlace.tsx's gridKey — see its comment.
   const [gridKey, setGridKey] = useState(0);
+  // The server-rendered first grid; see the AnimatePresence below.
+  const firstGrid = gridKey === 0;
   const [page, setPage] = useState(1);
   // Drops load-more responses from a previous filter/search — see MarketPlace.tsx.
   const queryVersion = useRef(0);
@@ -243,36 +246,27 @@ export default function Auctions({
             <CircularProgress />
           </Box>
         ) : auctions.length === 0 ? (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4 }}
-            style={{ textAlign: "center", marginTop: "80px" }}
-          >
-            <motion.div
-              initial={{ scale: 0.5, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: "spring", stiffness: 320, damping: 14, delay: 0.1 }}
-              style={{ display: "inline-block" }}
-            >
+          <Box sx={{ textAlign: "center", mt: "80px", ...fadeInSx({ duration: 0.4, y: 0 }) }}>
+            <Box sx={{ display: "inline-block", ...fadeInSx({ delay: 0.1, duration: 0.5, y: 0, scale: 0.5, easing: SPRING_EASING }) }}>
               <GavelIcon sx={{ fontSize: 48, color: "rgba(255,255,255,0.4)", mb: 2 }} />
-            </motion.div>
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.35, delay: 0.2 }}
-            >
+            </Box>
+            <Box sx={fadeInSx({ delay: 0.2, duration: 0.35, y: 10 })}>
               <Typography variant="h6" sx={{ color: "rgba(255,255,255,0.8)" }}>
                 No live auctions match your filters.
               </Typography>
               <Typography sx={{ fontSize: 13, color: "rgba(255,255,255,0.5)", mt: 0.5 }}>
                 Try a different set, or check back soon — sellers list new auctions regularly.
               </Typography>
-            </motion.div>
-          </motion.div>
+            </Box>
+          </Box>
         ) : (
           <Box sx={{ pb: 6 }}>
-            <AnimatePresence mode="wait">
+            {/* initial={!firstGrid}: the first grid is in the server HTML, so it
+                must not start hidden until the JavaScript loads — its stagger is
+                the CSS fade on each tile instead. Later grids (filter changes;
+                the loading spinner remounts this) keep framer's staggered
+                entrance and exit. */}
+            <AnimatePresence mode="wait" initial={!firstGrid}>
               <motion.div
                 key={gridKey}
                 variants={gridVariants}
@@ -285,9 +279,11 @@ export default function Auctions({
                   gap: "16px",
                 }}
               >
-                {auctions.map((auction) => (
+                {auctions.map((auction, i) => (
                   <motion.div key={auction.id} variants={cardVariants}>
-                    <AuctionCardItem auction={auction} watchlisted={watchlistedIds.has(auction.cardId)} />
+                    <Box sx={firstGrid ? fadeInSx({ delay: i * 0.04, duration: 0.3, y: 16 }) : undefined}>
+                      <AuctionCardItem auction={auction} watchlisted={watchlistedIds.has(auction.cardId)} />
+                    </Box>
                   </motion.div>
                 ))}
               </motion.div>

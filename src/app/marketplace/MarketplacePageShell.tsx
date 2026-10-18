@@ -12,7 +12,7 @@
 // imported here directly — no need to duplicate that boundary.
 
 import { Box, Typography } from "@mui/material";
-import { motion } from "framer-motion";
+import { fadeInSx } from "@/app/utils/fadeIn";
 import MarketplaceTabs from "./MarketplaceTabs";
 import { pageBackgroundSx } from "@/app/utils/pageBackground";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
@@ -33,11 +33,7 @@ export default function MarketplacePageShell({ children }: { children: React.Rea
 
         <Box sx={{ mt: 4 }}>
           {/* Page header */}
-          <motion.div
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-          >
+          <Box sx={fadeInSx({ duration: 0.4, y: 16 })}>
             <Box sx={{ mb: 4 }}>
               <Typography component="h1" sx={{ fontSize: { xs: 22, md: 28 }, fontWeight: 800, lineHeight: 1.1, color: "#fff" }}>
                 Marketplace
@@ -46,7 +42,7 @@ export default function MarketplacePageShell({ children }: { children: React.Rea
                 Browse and buy Pokémon and Riftbound cards listed by other collectors.
               </Typography>
             </Box>
-          </motion.div>
+          </Box>
 
           {children}
         </Box>

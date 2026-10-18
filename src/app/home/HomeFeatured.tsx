@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, startTransition } from "react";
 import { Box, CircularProgress, Typography } from "@mui/material";
 import { useRouter } from "next/navigation";
-import { fadeUpSx } from "./fadeUp";
+import Reveal from "@/app/shared-components/Reveal";
 import CardListItem from "@/app/shared-components/cards/CardListItem";
 import ErrorState from "@/app/shared-components/ErrorState";
 import { useWatchlistIds } from "@/app/hooks/useWatchlistIds";
@@ -34,7 +34,7 @@ const EAGER_CARDS = 4;
 function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager = false }: SectionRowProps) {
   return (
     <Box sx={{ mb: 3 }}>
-      <Box sx={fadeUpSx()}>
+      <Reveal y={14} duration={0.4} margin="-40px">
         <Typography
           variant="h5"
           fontWeight={700}
@@ -49,7 +49,7 @@ function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager
             {subtitle}
           </Typography>
         </Typography>
-      </Box>
+      </Reveal>
 
       {cards.length === 0 ? (
         <Typography sx={{ color: "rgba(255,255,255,0.6)" }}>No cards available yet.</Typography>
@@ -67,14 +67,14 @@ function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager
           {/* Each card staggers in; capped at 0.35 s so long rows don't
                leave the last card waiting. */}
           {cards.map((card, i) => (
-            <Box key={card.id} sx={{ flexShrink: 0, ...fadeUpSx(Math.min(i * 0.05, 0.35)) }}>
+            <Reveal key={card.id} sx={{ flexShrink: 0 }} y={18} duration={0.35} amount={0.1} delay={Math.min(i * 0.05, 0.35)}>
               <CardListItem
                 card={card}
                 watchlisted={watchlistedIds.has(card.id)}
                 onClick={onCardClick}
                 eager={eager && i < EAGER_CARDS}
               />
-            </Box>
+            </Reveal>
           ))}
         </Box>
       )}
@@ -120,7 +120,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
 
   return (
     <Box sx={{ mb: 3 }}>
-      <Box sx={fadeUpSx()}>
+      <Reveal y={14} duration={0.4} margin="-40px">
         <Typography
           variant="h5"
           fontWeight={700}
@@ -135,7 +135,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
             Live auctions closing shortly.
           </Typography>
         </Typography>
-      </Box>
+      </Reveal>
 
       <Box
         sx={{
@@ -148,7 +148,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
         }}
       >
         {auctions.map((auction, i) => (
-          <Box key={auction.id} sx={{ flexShrink: 0, ...fadeUpSx(Math.min(i * 0.05, 0.35)) }}>
+          <Reveal key={auction.id} sx={{ flexShrink: 0 }} y={18} duration={0.35} amount={0.1} delay={Math.min(i * 0.05, 0.35)}>
             <CardListItem
               card={auctionToCard(auction)}
               watchlisted={watchlistedIds.has(auction.cardId)}
@@ -161,7 +161,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
                 bidCount:    auction.bidCount,
               }}
             />
-          </Box>
+          </Reveal>
         ))}
       </Box>
     </Box>
