@@ -153,19 +153,44 @@ project, **tcg-index-sync** (`/home/buba/projects/tcg-index-sync`), which
 builds the card lists and fills in missing TCGPlayer ids. Full guide:
 [`tcg-index-sync/README.md`](../tcg-index-sync/README.md).
 
-In short:
+#### Update the catalog (one command)
+
+Run this from this repo:
 
 ```bash
-# in tcg-index-sync
-pnpm sync:pokemon && pnpm sync:riftbound
-# in this repo, once per new delta file
-pnpm import:catalog-delta /home/buba/projects/tcg-index-sync/output/<delta-file>.json
+pnpm update-catalog
 ```
 
-The importer (`src/lib/catalogDeltaImport.ts`) skips cards without a
-`tcgPlayerId` and upserts by the stable source id, so re-running is safe.
-After an import, the pricing crons below pick up the new cards automatically
-(backfill: once per card; refresh: daily).
+It does everything in order:
+
+1. Runs `pnpm sync:pokemon` in tcg-index-sync. This writes a new Pokémon delta file.
+2. Imports that file into the catalog with `pnpm import:catalog-delta`.
+3. Does the same for Riftbound.
+
+To update one game only, run `pnpm update-catalog pokemon` or `pnpm update-catalog riftbound`.
+
+Before the first run:
+
+- Clone tcg-index-sync next to this repo (`../tcg-index-sync`). If it is in a
+  different folder, set `TCG_INDEX_SYNC_DIR=/path/to/tcg-index-sync`.
+- In tcg-index-sync, run `pnpm install` and
+  `pnpm exec playwright install chromium` once. The Riftbound sync needs the browser.
+- Check `DATABASE_URL` in this repo's `.env`. The import writes to that database.
+
+How it behaves:
+
+- The import only adds and updates cards. It never deletes cards, and it skips
+  cards without a `tcgPlayerId`. You can run it again with no risk.
+- If a sync finds no changes, the import does nothing.
+- If an import fails, the script stops and prints the exact retry command
+  (`pnpm import:catalog-delta <file>`). Use that command. Do not run the sync
+  again, because the sync has already recorded those cards as done.
+- After an import, you do not need to do anything more. The pricing crons below
+  get prices for the new cards (backfill: once per card; refresh: daily for
+  listed cards, weekly for the others).
+
+To rebuild the full catalog, or to retry one unmatched Japanese set, see
+"Common tasks" in the tcg-index-sync README.
 
 ## Stripe setup
 
