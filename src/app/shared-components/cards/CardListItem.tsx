@@ -362,7 +362,14 @@ function CardListItem({
                         "@keyframes spin": { "0%": { transform: "rotate(0deg)" }, "100%": { transform: "rotate(180deg)" } },
                       }}
                     />
-                    <Typography sx={{ fontSize: "0.8rem", fontWeight: 700, color: timeLeft.done ? "#6b7280" : "#e53935", whiteSpace: "nowrap" }}>
+                    {/* The countdown depends on the current second, so the
+                        server HTML and the first browser render always
+                        differ — same as AuctionCardItem.tsx. Without this,
+                        React throws away the whole server-rendered home page. */}
+                    <Typography
+                      suppressHydrationWarning
+                      sx={{ fontSize: "0.8rem", fontWeight: 700, color: timeLeft.done ? "#6b7280" : "#e53935", whiteSpace: "nowrap" }}
+                    >
                       {timeLeft.done ? "Ended" : `${timeLeft.h}h ${pad(timeLeft.m)}m ${pad(timeLeft.s)}s`}
                     </Typography>
                   </Box>

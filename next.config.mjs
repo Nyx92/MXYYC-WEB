@@ -11,6 +11,8 @@ const nextConfig = {
     // name), so keep resized copies for 31 days instead of the 4-hour
     // default: fewer cold-cache misses and fewer Vercel transformations.
     minimumCacheTTL: 2678400,
+    // 60 is for the large home carousel images (see Carousell.tsx).
+    qualities: [60, 75],
     // remotePatterns is a SECURITY allow-list.
     // next/image will only load external images whose URL matches
     // one of these patterns.

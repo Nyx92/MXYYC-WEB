@@ -15,7 +15,7 @@
   /* 2. DYNAMIC SIZE: Width grows automatically with Height */
   height: 350px; /* Default height for mobile/tablet */
   width: auto;
-  aspect-ratio: 16 / 9; /* Maintains shape; width becomes ~800px */
+  aspect-ratio: 16 / 9; /* Maintains shape; width becomes ~622px */
 
   opacity: 0.5;
   transition:
@@ -34,6 +34,23 @@
 .swiper-slide-active {
   opacity: 1;
   transform: scale(1); /* Active slide is full size */
+}
+
+/* Before Swiper's JavaScript starts, no slide is "active" yet, so the first
+   slide would show at half opacity, shrunk and left-aligned until then.
+   Show it as the centered active slide from the first paint instead. */
+.custom-carousel:not(.swiper-initialized) .custom-slide:first-child {
+  opacity: 1;
+  transform: scale(1);
+  margin-left: calc(50% - 350px * 16 / 9 / 2);
+}
+@media (min-width: 1480px) {
+  .custom-carousel:not(.swiper-initialized) .custom-slide:first-child {
+    margin-left: calc(50% - 550px * 16 / 9 / 2);
+  }
+}
+.custom-carousel:not(.swiper-initialized) .custom-slide {
+  margin-right: 30px; /* spaceBetween, applied by Swiper once it starts */
 }
 
 /* Pagination styling */

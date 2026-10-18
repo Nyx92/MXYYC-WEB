@@ -4,6 +4,7 @@ import "./globals.css";
 import NavBar from "./shared-components/navbar/Navbar";
 import Footer from "./shared-components/footer/Footer";
 import SessionProviderWrapper from "@/providers/SessionProviderWrapper";
+import { AppRouterCacheProvider } from "@mui/material-nextjs/v15-appRouter";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import ThemeRegistry from "@/providers/ThemeRegistry";
@@ -42,6 +43,11 @@ export default async function RootLayout({
     <html lang="en" className={inter.variable}>
       <body className={inter.className} style={{ backgroundColor: "#f4f4f4" }}>
         {/* Wrap with SessionProvider so NextAuth session is available throughout */}
+        {/* Puts MUI's server-rendered styles in <head>. Without it they are
+            inline <style> tags in the body, which Emotion moves at load
+            time — when that races hydration, React throws away the server
+            HTML (error #418) and renders the page again in the browser. */}
+        <AppRouterCacheProvider>
         <SessionProviderWrapper session={session}>
           <ThemeRegistry>
             <CartProvider>
@@ -76,6 +82,7 @@ export default async function RootLayout({
             </CartProvider>
           </ThemeRegistry>
         </SessionProviderWrapper>
+        </AppRouterCacheProvider>
       </body>
     </html>
   );

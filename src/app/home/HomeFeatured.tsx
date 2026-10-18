@@ -3,25 +3,12 @@
 import { useState, useEffect, useCallback, startTransition } from "react";
 import { Box, CircularProgress, Typography } from "@mui/material";
 import { useRouter } from "next/navigation";
-import { motion, type Variants } from "framer-motion";
+import { fadeUpSx } from "./fadeUp";
 import CardListItem from "@/app/shared-components/cards/CardListItem";
 import ErrorState from "@/app/shared-components/ErrorState";
 import { useWatchlistIds } from "@/app/hooks/useWatchlistIds";
 import type { CardItem } from "@/types/card";
 import type { AuctionItem } from "@/types/auction";
-
-// ── Animation variants ────────────────────────────────────────────────────────
-// 1. Section titles: slide up + fade in when scrolled into view (once only).
-const titleVariants: Variants = {
-  hidden: { opacity: 0, y: 14 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" } },
-};
-// 2. Individual card tiles: same slide-up, capped stagger delay avoids
-//    long waits on rows with many cards.
-const cardItemVariants: Variants = {
-  hidden: { opacity: 0, y: 18 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
-};
 
 export interface FeaturedData {
   bestSellers: CardItem[];
@@ -47,12 +34,7 @@ const EAGER_CARDS = 4;
 function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager = false }: SectionRowProps) {
   return (
     <Box sx={{ mb: 3 }}>
-      <motion.div
-        variants={titleVariants}
-        initial="hidden"
-        whileInView="visible"
-        viewport={{ once: true, margin: "-40px" }}
-      >
+      <Box sx={fadeUpSx()}>
         <Typography
           variant="h5"
           fontWeight={700}
@@ -67,7 +49,7 @@ function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager
             {subtitle}
           </Typography>
         </Typography>
-      </motion.div>
+      </Box>
 
       {cards.length === 0 ? (
         <Typography sx={{ color: "rgba(255,255,255,0.6)" }}>No cards available yet.</Typography>
@@ -82,25 +64,17 @@ function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager
             "&::-webkit-scrollbar-thumb": { backgroundColor: "#ccc", borderRadius: 2 },
           }}
         >
-          {/* 3. Each card staggers in as the row enters the viewport.
-               Cap at 0.35 s so long rows don't leave the last card waiting. */}
+          {/* Each card staggers in; capped at 0.35 s so long rows don't
+               leave the last card waiting. */}
           {cards.map((card, i) => (
-            <motion.div
-              key={card.id}
-              variants={cardItemVariants}
-              initial="hidden"
-              whileInView="visible"
-              viewport={{ once: true, amount: 0.1 }}
-              transition={{ delay: Math.min(i * 0.05, 0.35) }}
-              style={{ flexShrink: 0 }}
-            >
+            <Box key={card.id} sx={{ flexShrink: 0, ...fadeUpSx(Math.min(i * 0.05, 0.35)) }}>
               <CardListItem
                 card={card}
                 watchlisted={watchlistedIds.has(card.id)}
                 onClick={onCardClick}
                 eager={eager && i < EAGER_CARDS}
               />
-            </motion.div>
+            </Box>
           ))}
         </Box>
       )}
@@ -146,12 +120,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
 
   return (
     <Box sx={{ mb: 3 }}>
-      <motion.div
-        variants={titleVariants}
-        initial="hidden"
-        whileInView="visible"
-        viewport={{ once: true, margin: "-40px" }}
-      >
+      <Box sx={fadeUpSx()}>
         <Typography
           variant="h5"
           fontWeight={700}
@@ -166,7 +135,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
             Live auctions closing shortly.
           </Typography>
         </Typography>
-      </motion.div>
+      </Box>
 
       <Box
         sx={{
@@ -179,15 +148,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
         }}
       >
         {auctions.map((auction, i) => (
-          <motion.div
-            key={auction.id}
-            variants={cardItemVariants}
-            initial="hidden"
-            whileInView="visible"
-            viewport={{ once: true, amount: 0.1 }}
-            transition={{ delay: Math.min(i * 0.05, 0.35) }}
-            style={{ flexShrink: 0 }}
-          >
+          <Box key={auction.id} sx={{ flexShrink: 0, ...fadeUpSx(Math.min(i * 0.05, 0.35)) }}>
             <CardListItem
               card={auctionToCard(auction)}
               watchlisted={watchlistedIds.has(auction.cardId)}
@@ -200,7 +161,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
                 bidCount:    auction.bidCount,
               }}
             />
-          </motion.div>
+          </Box>
         ))}
       </Box>
     </Box>
