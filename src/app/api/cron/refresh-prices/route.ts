@@ -11,24 +11,30 @@ import {
 } from "@/lib/pricing/justtcg";
 import { toPriceVariantLabel } from "@/app/utils/mapCondition";
 import { postCronResult } from "@/lib/discord";
+import { recordJobRun, saveJustTcgQuota } from "@/lib/jobState";
 
 /**
- * GET /api/cron/refresh-prices ← recommended schedule: once a day (cron-job.org)
+ * GET /api/cron/refresh-prices ← schedule: every 30 minutes (cron-job.org)
  * POST /api/cron/refresh-prices ← kept for local curl testing
  *
- * The CHEAP, frequent half of the two-tier pricing strategy (see also
- * /api/cron/backfill-prices for the expensive, occasional half). This job
- * only ever writes *today's* price — it never touches history — so it's
- * safe to run daily indefinitely without approaching JustTCG's call quota:
+ * Writes *today's* price (never history — see backfill-prices for that).
+ * Runs in short slices because cron-job.org closes requests after 30 s and
+ * JustTCG's Starter plan allows 10,000 calls a month: each call does at most
+ * ~15 s of work, picks up where the last one stopped, and costs 0 JustTCG
+ * calls when nothing is due (≤ ~15 s of new work per slice). Priority:
  *
- *   - Raw prices for the whole catalog go through JustTCG's v1 batch
- *     endpoint, 100 cards per call (~13 calls for 1,200+ cards).
- *   - Graded prices need v2 (v1 doesn't return them), so those are one call
- *     per card — but only for cards that actually have a graded Listing,
- *     which today is a small fraction of the catalog.
+ *   1. Listed cards not refreshed today → a daily price for every card
+ *      someone is actually selling (few calls).
+ *   2. Every other catalog card not refreshed in the last 7 days → a weekly
+ *      price for the whole catalog (~330 calls a week at ~32k cards).
  *
- * Total: roughly (catalog size / 100) + (graded-listed card count) calls
- * per run — under 20 today, and still cheap even as the catalog grows.
+ * Raw prices use JustTCG's v1 batch endpoint (100 cards per call); graded
+ * prices need v2, one call per *listed* card with a graded listing.
+ * `priceRefreshedAt` on the catalog row records each attempt, including
+ * cards JustTCG has no price for, so those don't get retried every slice.
+ *
+ * Status is recorded in JobState; Discord hears only about status changes
+ * (see src/lib/jobState.ts) and the daily /api/cron/report-prices digest.
  *
  * For local testing:
  *   curl http://localhost:3000/api/cron/refresh-prices \
@@ -57,6 +63,13 @@ type PriceWrite = {
 // (src/lib/prisma.ts) since the graded path's per-card fetch also triggers
 // database reads/writes.
 const FETCH_CONCURRENCY = 5;
+
+// Stop starting new work after this long, so a slice always finishes inside
+// cron-job.org's 30 s request timeout.
+const TIME_BUDGET_MS = 15_000;
+// At most this many raw batch calls (100 cards each) per slice.
+const MAX_BATCHES_PER_SLICE = 12;
+const CATALOG_REFRESH_DAYS = 7;
 
 /**
  * Writes a whole set of today's prices in a small, fixed number of queries
@@ -143,64 +156,63 @@ async function runRefresh(req: NextRequest): Promise<NextResponse> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[cron/refresh-prices] Crashed:", msg);
-    await postCronResult({ job: "refresh-prices", ok: false, summary: `Crashed: ${msg}` });
+    await recordJobRun("refresh-prices", { ok: false, summary: `Crashed: ${msg}` });
     return NextResponse.json({ error: "refresh-prices crashed", message: msg }, { status: 500 });
   }
 }
 
 async function refreshPrices(): Promise<NextResponse> {
-  const capturedAt = new Date(new Date().toISOString().slice(0, 10));
+  const startedAt = Date.now();
+  const now = new Date();
+  const capturedAt = new Date(now.toISOString().slice(0, 10));
+  const startOfToday = capturedAt; // UTC midnight — same day boundary as capturedAt
+  const weekAgo = new Date(now.getTime() - CATALOG_REFRESH_DAYS * 24 * 60 * 60 * 1000);
+  const cap = MAX_BATCHES_PER_SLICE * 100;
 
-  const [pokemonCards, riftboundCards, pokemonListings, riftboundListings] = await Promise.all([
-    prisma.pokemonCardCatalog.findMany({
-      where: { tcgPlayerId: { not: null } },
-      select: { id: true, tcgPlayerId: true, language: true },
-    }),
-    prisma.riftboundCardCatalog.findMany({
-      where: { tcgPlayerId: { not: null } },
-      select: { id: true, tcgPlayerId: true },
-    }),
-    prisma.listing.findMany({
-      where: { game: "POKEMON", pokemonCardId: { not: null } },
-      select: { condition: true, pokemonCardId: true },
-    }),
-    prisma.listing.findMany({
-      where: { game: "RIFTBOUND", riftboundCardId: { not: null } },
-      select: { condition: true, riftboundCardId: true },
-    }),
+  const listedDue = { tcgPlayerId: { not: null }, listings: { some: {} }, OR: [{ priceRefreshedAt: null }, { priceRefreshedAt: { lt: startOfToday } }] };
+  const catalogDue = { tcgPlayerId: { not: null }, OR: [{ priceRefreshedAt: null }, { priceRefreshedAt: { lt: weekAgo } }] };
+  const oldestFirst = [{ priceRefreshedAt: { sort: "asc" as const, nulls: "first" as const } }, { id: "asc" as const }];
+
+  // 1. Listed cards due today (both games), then 2. catalog cards due this week.
+  const [listedPokemon, listedRiftbound] = await Promise.all([
+    prisma.pokemonCardCatalog.findMany({ where: listedDue, select: { id: true, tcgPlayerId: true, language: true }, take: cap }),
+    prisma.riftboundCardCatalog.findMany({ where: listedDue, select: { id: true, tcgPlayerId: true }, take: cap }),
   ]);
+  const toRef = (game: "POKEMON" | "RIFTBOUND") => (c: { id: string; tcgPlayerId: string | null; language?: string }): CardRef => ({
+    catalogIdField: game === "POKEMON" ? "pokemonCardId" : "riftboundCardId",
+    catalogId: c.id,
+    game,
+    tcgPlayerId: c.tcgPlayerId as string,
+    language: c.language,
+  });
+  const listedCards = [...listedPokemon.map(toRef("POKEMON")), ...listedRiftbound.map(toRef("RIFTBOUND"))].slice(0, cap);
 
-  const gradedPokemonCardIds = new Set(
-    pokemonListings
-      .filter((l) => toPriceVariantLabel(l.condition) !== "RAW")
-      .map((l) => l.pokemonCardId)
-  );
-  const gradedRiftboundCardIds = new Set(
-    riftboundListings
-      .filter((l) => toPriceVariantLabel(l.condition) !== "RAW")
-      .map((l) => l.riftboundCardId)
-  );
+  let catalogCards: CardRef[] = [];
+  if (listedCards.length < cap) {
+    const seen = new Set(listedCards.map((c) => c.catalogId));
+    const room = cap - listedCards.length;
+    const riftbound = await prisma.riftboundCardCatalog.findMany({ where: catalogDue, select: { id: true, tcgPlayerId: true }, orderBy: oldestFirst, take: room });
+    const pokemon = riftbound.length < room
+      ? await prisma.pokemonCardCatalog.findMany({ where: catalogDue, select: { id: true, tcgPlayerId: true, language: true }, orderBy: oldestFirst, take: room - riftbound.length })
+      : [];
+    catalogCards = [...riftbound.map(toRef("RIFTBOUND")), ...pokemon.map(toRef("POKEMON"))].filter((c) => !seen.has(c.catalogId));
+  }
 
-  const allCards: CardRef[] = [
-    ...pokemonCards.map((c) => ({
-      catalogIdField: "pokemonCardId" as const,
-      catalogId: c.id,
-      game: "POKEMON" as const,
-      tcgPlayerId: c.tcgPlayerId as string,
-      language: c.language,
-    })),
-    ...riftboundCards.map((c) => ({
-      catalogIdField: "riftboundCardId" as const,
-      catalogId: c.id,
-      game: "RIFTBOUND" as const,
-      tcgPlayerId: c.tcgPlayerId as string,
-    })),
-  ];
-
-  const results = { rawRefreshed: 0, gradedRefreshed: 0, failed: 0, errors: [] as string[] };
+  const results = { rawRefreshed: 0, gradedRefreshed: 0, failed: 0, errors: [] as string[], stoppedForTime: false };
+  const markRefreshed = async (cards: CardRef[]) => {
+    const pokemonIds = cards.filter((c) => c.game === "POKEMON").map((c) => c.catalogId);
+    const riftboundIds = cards.filter((c) => c.game === "RIFTBOUND").map((c) => c.catalogId);
+    if (pokemonIds.length) await prisma.pokemonCardCatalog.updateMany({ where: { id: { in: pokemonIds } }, data: { priceRefreshedAt: now } });
+    if (riftboundIds.length) await prisma.riftboundCardCatalog.updateMany({ where: { id: { in: riftboundIds } }, data: { priceRefreshedAt: now } });
+  };
 
   // ── Raw prices: batched, 100 cards per call ────────────────────────────
-  for (const batch of chunk(allCards, 100)) {
+  const refreshedRaw: CardRef[] = [];
+  for (const batch of chunk([...listedCards, ...catalogCards], 100)) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      results.stoppedForTime = true;
+      break;
+    }
     try {
       const byTcgId = await fetchCardVariantsBatch(batch.map((c) => c.tcgPlayerId));
       const writes: PriceWrite[] = [];
@@ -219,8 +231,10 @@ async function refreshPrices(): Promise<NextResponse> {
         }
       }
       await writePricesInBulk(writes, capturedAt);
+      await markRefreshed(batch);
       // Counted only once the write landed — a failed write lands in `failed`.
       results.rawRefreshed += batch.length;
+      refreshedRaw.push(...batch);
     } catch (err) {
       results.failed += batch.length;
       const msg = err instanceof Error ? err.message : String(err);
@@ -229,15 +243,27 @@ async function refreshPrices(): Promise<NextResponse> {
     }
   }
 
-  // ── Graded prices: one call per card that actually has a graded listing ─
-  const gradedCards = allCards.filter(
-    (c) =>
-      (c.game === "POKEMON" && gradedPokemonCardIds.has(c.catalogId)) ||
-      (c.game === "RIFTBOUND" && gradedRiftboundCardIds.has(c.catalogId))
-  );
+  // ── Graded prices: one v2 call per refreshed *listed* card with a graded listing ─
+  const listedIds = new Set(listedCards.map((c) => c.catalogId));
+  const refreshedListed = refreshedRaw.filter((c) => listedIds.has(c.catalogId));
+  const [pokemonListings, riftboundListings] = refreshedListed.length
+    ? await Promise.all([
+        prisma.listing.findMany({ where: { pokemonCardId: { in: refreshedListed.map((c) => c.catalogId) } }, select: { condition: true, pokemonCardId: true } }),
+        prisma.listing.findMany({ where: { riftboundCardId: { in: refreshedListed.map((c) => c.catalogId) } }, select: { condition: true, riftboundCardId: true } }),
+      ])
+    : [[], []];
+  const gradedIds = new Set([
+    ...pokemonListings.filter((l) => toPriceVariantLabel(l.condition) !== "RAW").map((l) => l.pokemonCardId),
+    ...riftboundListings.filter((l) => toPriceVariantLabel(l.condition) !== "RAW").map((l) => l.riftboundCardId),
+  ]);
+  const gradedCards = refreshedListed.filter((c) => gradedIds.has(c.catalogId));
 
   const gradedWrites: PriceWrite[] = [];
   await runWithConcurrency(gradedCards, FETCH_CONCURRENCY, async (card) => {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      results.stoppedForTime = true;
+      return; // its raw price is in; the graded price waits for tomorrow
+    }
     try {
       const variants = await fetchCardVariants({
         tcgPlayerId: card.tcgPlayerId,
@@ -266,19 +292,29 @@ async function refreshPrices(): Promise<NextResponse> {
   });
   await writePricesInBulk(gradedWrites, capturedAt);
 
-  const summary = `Raw: ${results.rawRefreshed}, Graded: ${results.gradedRefreshed}, Failed: ${results.failed}`;
+  const [listedLeft, catalogLeft] = await Promise.all([
+    Promise.all([prisma.pokemonCardCatalog.count({ where: listedDue }), prisma.riftboundCardCatalog.count({ where: listedDue })]).then(([a, b]) => a + b),
+    Promise.all([prisma.pokemonCardCatalog.count({ where: catalogDue }), prisma.riftboundCardCatalog.count({ where: catalogDue })]).then(([a, b]) => a + b),
+  ]);
+
+  const summary =
+    `Raw: ${results.rawRefreshed}, Graded: ${results.gradedRefreshed}, Failed: ${results.failed}. ` +
+    `Still due — listed today: ${listedLeft}, catalog (>${CATALOG_REFRESH_DAYS}d): ${catalogLeft}`;
   console.log(`[cron/refresh-prices] Done. ${summary}`);
-  await postCronResult({
-    job: "refresh-prices",
+  await saveJustTcgQuota();
+  await recordJobRun("refresh-prices", {
     ok: results.failed === 0,
     summary,
     errors: results.errors,
+    data: { rawRefreshed: results.rawRefreshed, gradedRefreshed: results.gradedRefreshed, failed: results.failed, listedLeft, catalogLeft },
   });
 
   return NextResponse.json({
     rawRefreshed: results.rawRefreshed,
     gradedRefreshed: results.gradedRefreshed,
     failed: results.failed,
+    remaining: { listedDueToday: listedLeft, catalogDue: catalogLeft },
+    stoppedForTime: results.stoppedForTime,
     ...(results.errors.length > 0 && { errors: results.errors }),
   });
 }

@@ -185,6 +185,10 @@ model PokemonCardCatalog {
   // JustTCG can never price stops burning the daily request budget and can't
   // block the queue. Reset to 0 to retry it.
   priceBackfillAttempts Int @default(0)
+  // Last time refresh-prices fetched today's price for this card (listed
+  // cards daily, every other card weekly). Null = never refreshed; the job
+  // picks the oldest first.
+  priceRefreshedAt DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -221,6 +225,7 @@ model RiftboundCardCatalog {
   // See PokemonCardCatalog.priceBackfilledAt / priceBackfillAttempts above.
   priceBackfilledAt DateTime?
   priceBackfillAttempts Int @default(0)
+  priceRefreshedAt DateTime? // see PokemonCardCatalog.priceRefreshedAt
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -638,4 +643,17 @@ model Bid {
 
   @@index([auctionId, status])
   @@index([bidderId])
+}
+
+// One row per background job (e.g. "refresh-prices", "backfill-prices"), plus
+// "justtcg-quota" for the latest JustTCG quota numbers. Lets a job alert only
+// when its status changes (ok → failing, failing → ok) instead of on every
+// run, and lets the daily price report see when each job last ran.
+model JobState {
+  job         String   @id
+  lastRunAt   DateTime
+  lastOk      Boolean
+  lastSummary String
+  data        Json?
+  updatedAt   DateTime @updatedAt
 }

@@ -5,6 +5,7 @@ import {
   usdMarket,
   chunk,
   pickPricedVariants,
+  getLastJustTcgQuota,
 } from "@/lib/pricing/justtcg";
 
 /**
@@ -126,6 +127,23 @@ describe("fetchCardVariants", () => {
     await Promise.resolve(); // let fetchCardVariants reach the fetch() call and register its listener
     controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
     await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+
+  it("retries once on a network-level failure and returns the second attempt's result", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockFetch
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ variants: [{ type: "raw" }] }] }) });
+
+    const variants = await fetchCardVariants({ tcgPlayerId: "1", game: "POKEMON" });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(variants).toHaveLength(1);
+  });
+
+  it("does not retry an HTTP error status", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) });
+    await expect(fetchCardVariants({ tcgPlayerId: "1", game: "POKEMON" })).rejects.toThrow("500");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it("forwards historyWindow as an include=price_history.<window> param", async () => {
@@ -370,5 +388,63 @@ describe("outbound rate limiting", () => {
     await vi.advanceTimersByTimeAsync(60_000); // the 60s window rolls over
     await pending;
     expect(mockFetch).toHaveBeenCalledTimes(46);
+  });
+});
+
+/**
+ * getLastJustTcgQuota exposes the latest quota numbers JustTCG reported:
+ * v1 batch responses carry them in a JSON `_metadata` block, v2 responses
+ * only as `ratelimit-*` headers. The module-level value persists across
+ * every test in this file, so these assert on the fields each call sets.
+ */
+describe("getLastJustTcgQuota", () => {
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", mockFetch);
+    mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("records a v1 batch response's _metadata", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [],
+        _metadata: {
+          apiRequestLimit: 10000,
+          apiRequestsRemaining: 7421,
+          apiDailyLimit: 1000,
+          apiDailyRequestsRemaining: 987,
+          apiPlan: "Starter",
+        },
+      }),
+    });
+
+    await fetchCardVariantsBatch(["1"]);
+
+    expect(getLastJustTcgQuota()).toEqual({
+      monthlyLimit: 10000,
+      monthlyRemaining: 7421,
+      dailyLimit: 1000,
+      dailyRemaining: 987,
+      plan: "Starter",
+      at: expect.any(String),
+    });
+  });
+
+  it("records a v2 response's ratelimit-remaining header", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      headers: new Headers({ "ratelimit-remaining": "7420", "ratelimit-limit": "10000" }),
+      json: async () => ({ data: [{ variants: [] }] }),
+    });
+
+    await fetchCardVariants({ tcgPlayerId: "1", game: "POKEMON" });
+
+    expect(getLastJustTcgQuota()).toMatchObject({ monthlyRemaining: 7420, monthlyLimit: 10000 });
   });
 });

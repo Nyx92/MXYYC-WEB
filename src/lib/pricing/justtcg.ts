@@ -45,6 +45,60 @@ async function waitForJustTcgSlot(): Promise<void> {
   }
 }
 
+// The latest JustTCG quota numbers seen in a response: v1 batch responses
+// carry a full `_metadata` block, v2 responses only the monthly remaining in
+// the `ratelimit-remaining` header. Read by the backfill's quota guard and
+// saved for the daily price report (see src/lib/jobState.ts).
+export type JustTcgQuota = {
+  monthlyLimit: number | null;
+  monthlyRemaining: number | null;
+  dailyLimit: number | null;
+  dailyRemaining: number | null;
+  plan: string | null;
+  at: string;
+};
+let lastQuota: JustTcgQuota | null = null;
+
+export function getLastJustTcgQuota(): JustTcgQuota | null {
+  return lastQuota;
+}
+
+function noteQuota(update: Partial<JustTcgQuota>) {
+  const base: JustTcgQuota = lastQuota ?? { monthlyLimit: null, monthlyRemaining: null, dailyLimit: null, dailyRemaining: null, plan: null, at: "" };
+  lastQuota = { ...base, ...update, at: new Date().toISOString() };
+}
+
+function noteQuotaFromHeaders(res: Response) {
+  const remaining = res.headers?.get?.("ratelimit-remaining");
+  if (remaining == null || !Number.isFinite(Number(remaining))) return;
+  const limit = Number(res.headers.get("ratelimit-limit"));
+  noteQuota({ monthlyRemaining: Number(remaining), ...(Number.isFinite(limit) && limit > 0 ? { monthlyLimit: limit } : {}) });
+}
+
+function noteQuotaFromMetadata(meta: Record<string, unknown> | undefined) {
+  if (!meta || typeof meta.apiRequestsRemaining !== "number") return;
+  noteQuota({
+    monthlyLimit: (meta.apiRequestLimit as number) ?? null,
+    monthlyRemaining: meta.apiRequestsRemaining as number,
+    dailyLimit: (meta.apiDailyLimit as number) ?? null,
+    dailyRemaining: (meta.apiDailyRequestsRemaining as number) ?? null,
+    plan: (meta.apiPlan as string) ?? null,
+  });
+}
+
+// One retry for network-level failures only ("fetch failed", a timeout) —
+// a brief glitch would otherwise cost a card one of its backfill attempts.
+// HTTP error statuses are returned as-is for the caller to handle.
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(JUSTTCG_TIMEOUT_MS) });
+  } catch (err) {
+    if (process.env.NODE_ENV !== "test") await new Promise((resolve) => setTimeout(resolve, 1000));
+    console.warn("[justtcg] Network error, retrying once:", err instanceof Error ? err.message : err);
+    return fetch(url, { ...init, signal: AbortSignal.timeout(JUSTTCG_TIMEOUT_MS) });
+  }
+}
+
 export type JustTcgPricePoint = { t: number; p: number }; // t: unix seconds, p: price
 
 export type JustTcgMarket = {
@@ -107,10 +161,11 @@ export async function fetchCardVariants(params: {
   }
 
   await waitForJustTcgSlot();
-  const res = await fetch(url.toString(), {
+  const res = await fetchWithRetry(url.toString(), {
     headers: { "x-api-key": apiKeyOrThrow() },
-    signal: AbortSignal.timeout(JUSTTCG_TIMEOUT_MS),
   });
+
+  noteQuotaFromHeaders(res);
 
   // A 404 means JustTCG has no record at all for this tcgPlayerId — not a
   // transient failure, so it's treated the same as "found the card, no
@@ -144,14 +199,13 @@ export async function fetchCardVariantsBatch(
   }
 
   await waitForJustTcgSlot();
-  const res = await fetch(V1_BASE_URL, {
+  const res = await fetchWithRetry(V1_BASE_URL, {
     method: "POST",
     headers: {
       "x-api-key": apiKeyOrThrow(),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(tcgPlayerIds.map((tcgplayerId) => ({ tcgplayerId }))),
-    signal: AbortSignal.timeout(JUSTTCG_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -159,6 +213,7 @@ export async function fetchCardVariantsBatch(
   }
 
   const json = await res.json();
+  noteQuotaFromMetadata(json?._metadata);
   const result = new Map<string, JustTcgVariant[]>();
 
   for (const card of json?.data ?? []) {

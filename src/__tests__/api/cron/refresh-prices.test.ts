@@ -3,26 +3,35 @@ import { NextRequest } from "next/server";
 
 /**
  * GET /api/cron/refresh-prices is the cheap, frequent half of the two-tier
- * pricing strategy: raw prices for the whole catalog go through JustTCG's
- * v1 batch endpoint (100 cards/call), and graded prices — v1 doesn't return
- * those — go through one v2 call per card, but only for cards that actually
- * have a graded Listing. Deep history backfilling is a separate route
- * (/api/cron/backfill-prices); this route only ever writes today's price.
+ * pricing strategy. Each call is one time-bounded slice: listed cards not
+ * refreshed today first, then catalog cards not refreshed in 7 days. Raw
+ * prices go through JustTCG's v1 batch endpoint (100 cards/call), and graded
+ * prices — v1 doesn't return those — go through one v2 call per refreshed
+ * *listed* card that actually has a graded Listing. Deep history
+ * backfilling is a separate route (/api/cron/backfill-prices); this route
+ * only ever writes today's price.
  *
- * Prisma and the JustTCG client are both mocked — no real DB or vendor call.
+ * Prisma, the JustTCG client and JobState are all mocked — no real DB or
+ * vendor call.
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  pokemonCardCatalog: { findMany: vi.fn() },
-  riftboundCardCatalog: { findMany: vi.fn() },
+  pokemonCardCatalog: { findMany: vi.fn(), updateMany: vi.fn(), count: vi.fn() },
+  riftboundCardCatalog: { findMany: vi.fn(), updateMany: vi.fn(), count: vi.fn() },
   listing: { findMany: vi.fn() },
   priceHistory: { findMany: vi.fn(), createMany: vi.fn(), update: vi.fn() },
 }));
 
 const mockFetchCardVariants = vi.hoisted(() => vi.fn());
 const mockFetchCardVariantsBatch = vi.hoisted(() => vi.fn());
+const mockRecordJobRun = vi.hoisted(() => vi.fn());
+const mockSaveJustTcgQuota = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/jobState", () => ({
+  recordJobRun: mockRecordJobRun,
+  saveJustTcgQuota: mockSaveJustTcgQuota,
+}));
 vi.mock("@/lib/pricing/justtcg", () => ({
   fetchCardVariants: mockFetchCardVariants,
   fetchCardVariantsBatch: mockFetchCardVariantsBatch,
@@ -58,6 +67,20 @@ function makeRequest(authToken?: string) {
   });
 }
 
+// The route asks each catalog model twice: once for listed cards due today
+// (where has `listings`), once for catalog cards due this week.
+function seedCards(
+  model: typeof mockPrisma.pokemonCardCatalog,
+  { listed = [], catalog = [] }: { listed?: any[]; catalog?: any[] }
+) {
+  model.findMany.mockImplementation(async ({ where }: any) => (where.listings ? listed : catalog));
+}
+
+const gradedPokemonListing = () =>
+  mockPrisma.listing.findMany.mockImplementation(async ({ where }: any) =>
+    where.pokemonCardId ? [{ condition: "PSA 10", pokemonCardId: "pkm-1" }] : []
+  );
+
 const NEAR_MINT_VARIANT = {
   type: "raw",
   condition: "Near Mint",
@@ -77,6 +100,8 @@ describe("GET /api/cron/refresh-prices", () => {
     mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([]);
     mockPrisma.riftboundCardCatalog.findMany.mockResolvedValue([]);
     mockPrisma.listing.findMany.mockResolvedValue([]);
+    mockPrisma.pokemonCardCatalog.count.mockResolvedValue(0);
+    mockPrisma.riftboundCardCatalog.count.mockResolvedValue(0);
     mockPrisma.priceHistory.findMany.mockResolvedValue([]);
     mockFetchCardVariantsBatch.mockResolvedValue(new Map());
   });
@@ -86,9 +111,9 @@ describe("GET /api/cron/refresh-prices", () => {
     expect(res.status).toBe(401);
   });
 
-  it("batches every catalog card's raw price through fetchCardVariantsBatch", async () => {
+  it("batches a due catalog card's raw price through fetchCardVariantsBatch", async () => {
     const card = { id: "pkm-1", tcgPlayerId: "42360", language: "English" };
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([card]);
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [card] });
     mockFetchCardVariantsBatch.mockResolvedValue(
       new Map([["42360", [NEAR_MINT_VARIANT]]])
     );
@@ -119,7 +144,7 @@ describe("GET /api/cron/refresh-prices", () => {
       tcgPlayerId: `id-${i}`,
       language: "English",
     }));
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue(cards);
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: cards });
 
     await GET(makeRequest("test-cron-secret"));
 
@@ -131,12 +156,8 @@ describe("GET /api/cron/refresh-prices", () => {
   it("only calls fetchCardVariants (v2) for cards with an actual graded listing", async () => {
     const gradedCard = { id: "pkm-1", tcgPlayerId: "42360", language: "English" };
     const rawOnlyCard = { id: "pkm-2", tcgPlayerId: "99999", language: "English" };
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([gradedCard, rawOnlyCard]);
-    mockPrisma.listing.findMany.mockImplementation(({ where }: any) =>
-      where.game === "POKEMON"
-        ? Promise.resolve([{ condition: "PSA 10", pokemonCardId: "pkm-1" }])
-        : Promise.resolve([])
-    );
+    seedCards(mockPrisma.pokemonCardCatalog, { listed: [gradedCard, rawOnlyCard] });
+    gradedPokemonListing();
     mockFetchCardVariants.mockResolvedValue([PSA10_VARIANT]);
 
     const res = await GET(makeRequest("test-cron-secret"));
@@ -159,14 +180,8 @@ describe("GET /api/cron/refresh-prices", () => {
   });
 
   it("does not re-write RAW from the graded (v2) call — that's the batch pass's job", async () => {
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
-      { id: "pkm-1", tcgPlayerId: "42360", language: "English" },
-    ]);
-    mockPrisma.listing.findMany.mockImplementation(({ where }: any) =>
-      where.game === "POKEMON"
-        ? Promise.resolve([{ condition: "PSA 10", pokemonCardId: "pkm-1" }])
-        : Promise.resolve([])
-    );
+    seedCards(mockPrisma.pokemonCardCatalog, { listed: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    gradedPokemonListing();
     mockFetchCardVariants.mockResolvedValue([NEAR_MINT_VARIANT, PSA10_VARIANT]);
 
     await GET(makeRequest("test-cron-secret"));
@@ -178,9 +193,7 @@ describe("GET /api/cron/refresh-prices", () => {
   });
 
   it("continues when a raw batch fails, counting every card in it as failed", async () => {
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
-      { id: "pkm-1", tcgPlayerId: "42360", language: "English" },
-    ]);
+    seedCards(mockPrisma.pokemonCardCatalog, { listed: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
     mockFetchCardVariantsBatch.mockRejectedValue(new Error("JustTCG batch request failed: 500"));
 
     const res = await GET(makeRequest("test-cron-secret"));
@@ -191,9 +204,7 @@ describe("GET /api/cron/refresh-prices", () => {
   });
 
   it("doesn't count a batch as refreshed when its price write fails", async () => {
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
-      { id: "pkm-1", tcgPlayerId: "42360", language: "English" },
-    ]);
+    seedCards(mockPrisma.pokemonCardCatalog, { listed: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
     mockFetchCardVariantsBatch.mockResolvedValue(new Map([["42360", [NEAR_MINT_VARIANT]]]));
     mockPrisma.priceHistory.createMany.mockRejectedValueOnce(new Error("db write failed"));
 
@@ -204,14 +215,8 @@ describe("GET /api/cron/refresh-prices", () => {
   });
 
   it("continues when one graded card's v2 call fails", async () => {
-    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
-      { id: "pkm-1", tcgPlayerId: "42360", language: "English" },
-    ]);
-    mockPrisma.listing.findMany.mockImplementation(({ where }: any) =>
-      where.game === "POKEMON"
-        ? Promise.resolve([{ condition: "PSA 10", pokemonCardId: "pkm-1" }])
-        : Promise.resolve([])
-    );
+    seedCards(mockPrisma.pokemonCardCatalog, { listed: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    gradedPokemonListing();
     mockFetchCardVariants.mockRejectedValue(new Error("JustTCG request failed: 500"));
 
     const res = await GET(makeRequest("test-cron-secret"));
@@ -221,10 +226,113 @@ describe("GET /api/cron/refresh-prices", () => {
     expect(data.errors[0]).toContain("pkm-1");
   });
 
-  it("queries every catalog card with a tcgPlayerId, not just ones with a listing", async () => {
+  it("queries catalog cards with a tcgPlayerId, not just ones with a listing", async () => {
     await GET(makeRequest("test-cron-secret"));
+    const catalogQuery = mockPrisma.pokemonCardCatalog.findMany.mock.calls
+      .map((c: any) => c[0].where)
+      .find((where: any) => !where.listings);
+    expect(catalogQuery).toMatchObject({ tcgPlayerId: { not: null } });
+  });
+
+  it("only picks listed cards not refreshed since UTC midnight today", async () => {
+    await GET(makeRequest("test-cron-secret"));
+    const startOfToday = new Date(new Date().toISOString().slice(0, 10));
     expect(mockPrisma.pokemonCardCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { tcgPlayerId: { not: null } } })
+      expect.objectContaining({
+        where: {
+          tcgPlayerId: { not: null },
+          listings: { some: {} },
+          OR: [{ priceRefreshedAt: null }, { priceRefreshedAt: { lt: startOfToday } }],
+        },
+      })
     );
+  });
+
+  it("fetches listed cards due today before catalog cards (Riftbound catalog before Pokemon)", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, {
+      listed: [{ id: "pkm-listed", tcgPlayerId: "listed", language: "English" }],
+      catalog: [{ id: "pkm-cat", tcgPlayerId: "pkm-cat", language: "English" }],
+    });
+    seedCards(mockPrisma.riftboundCardCatalog, { catalog: [{ id: "rb-cat", tcgPlayerId: "rb-cat" }] });
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockFetchCardVariantsBatch).toHaveBeenCalledTimes(1);
+    expect(mockFetchCardVariantsBatch.mock.calls[0][0]).toEqual(["listed", "rb-cat", "pkm-cat"]);
+  });
+
+  it("sets priceRefreshedAt for every card in a successfully written batch", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    seedCards(mockPrisma.riftboundCardCatalog, { catalog: [{ id: "rb-1", tcgPlayerId: "77" }] });
+    mockFetchCardVariantsBatch.mockResolvedValue(new Map([["42360", [NEAR_MINT_VARIANT]]]));
+
+    await GET(makeRequest("test-cron-secret"));
+
+    // rb-1 had no price from JustTCG, but the attempt is still recorded so it
+    // isn't retried every slice.
+    expect(mockPrisma.pokemonCardCatalog.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["pkm-1"] } },
+      data: { priceRefreshedAt: expect.any(Date) },
+    });
+    expect(mockPrisma.riftboundCardCatalog.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["rb-1"] } },
+      data: { priceRefreshedAt: expect.any(Date) },
+    });
+  });
+
+  it("leaves priceRefreshedAt untouched for a failed batch, so it's picked up next slice", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    mockFetchCardVariantsBatch.mockRejectedValue(new Error("JustTCG batch request failed: 500"));
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockPrisma.pokemonCardCatalog.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("records a failing run via recordJobRun when a batch fails", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    mockFetchCardVariantsBatch.mockRejectedValue(new Error("JustTCG batch request failed: 500"));
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockSaveJustTcgQuota).toHaveBeenCalled();
+    expect(mockRecordJobRun).toHaveBeenCalledWith(
+      "refresh-prices",
+      expect.objectContaining({ ok: false, errors: [expect.stringContaining("500")] })
+    );
+  });
+
+  it("records an ok run when every batch lands", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    mockFetchCardVariantsBatch.mockResolvedValue(new Map([["42360", [NEAR_MINT_VARIANT]]]));
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockRecordJobRun).toHaveBeenCalledWith("refresh-prices", expect.objectContaining({ ok: true }));
+  });
+
+  it("makes no JustTCG call when nothing is due, and reports what's still due", async () => {
+    mockPrisma.pokemonCardCatalog.count.mockImplementation(async ({ where }: any) => (where.listings ? 0 : 3));
+    mockPrisma.riftboundCardCatalog.count.mockResolvedValue(0);
+
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+
+    expect(mockFetchCardVariantsBatch).not.toHaveBeenCalled();
+    expect(mockFetchCardVariants).not.toHaveBeenCalled();
+    expect(data).toMatchObject({
+      rawRefreshed: 0,
+      failed: 0,
+      remaining: { listedDueToday: 0, catalogDue: 3 },
+      stoppedForTime: false,
+    });
+  });
+
+  it("skips the graded (v2) call for a graded card that's only in the catalog pass, not listed", async () => {
+    seedCards(mockPrisma.pokemonCardCatalog, { catalog: [{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }] });
+    gradedPokemonListing();
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockFetchCardVariants).not.toHaveBeenCalled();
   });
 });

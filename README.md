@@ -224,14 +224,26 @@ Both endpoints below are pinged **every minute**:
 
 ### Cron jobs (card pricing)
 
-Card market prices come from [JustTCG](https://justtcg.com). Two separate jobs, on two very different schedules, split the cost so daily use stays cheap even though a full price history pull is not:
+Card market prices come from [JustTCG](https://justtcg.com), **Starter plan: 10,000 calls a month, 1,000 a day, 50 a minute.** The catalog has ~32k priceable cards, so the jobs are built around that budget and around two hard limits: **cron-job.org closes a request after 30 s**, and Vercel Hobby functions run at most 300 s. Each job therefore runs in **short slices** (≤ ~15 s of new work), picks up where the last slice stopped, and costs **0 JustTCG calls when nothing is due**.
 
-- `GET /api/cron/refresh-prices` — **run daily.** Cheap: batches raw prices for the whole catalog (~100 cards/call) and only calls JustTCG per-card for cards with an actual graded listing. Only ever writes today's price.
-- `GET /api/cron/backfill-prices?limit=500` — **run twice a month.** Expensive: one call per card, pulling up to a year of daily history. Self-resuming — a card is marked done once it succeeds, so this only ever pulls a given card's deep history once, no matter how many times the job runs. Catalog-wide and listing-prioritized: a card someone's actually selling is backfilled before one that's only in the catalog. Safe to call again the same day to keep working through a large catalog; each call defaults to 500 cards and caps at 950 to stay under JustTCG's daily request limit. A card that fails 5 times leaves the queue (`priceBackfillAttempts`; reset it to 0 to retry) and is counted as "Gave up" in the Discord summary.
+| Job | cron-job.org schedule | What one call does |
+|---|---|---|
+| `GET /api/cron/refresh-prices` | **every 30 minutes** | Writes **today's** price. First: listed cards not refreshed today (daily prices for everything on sale). Then: catalog cards not refreshed for 7 days (a weekly price for the whole catalog, ~330 calls a week). Up to 12 batch calls (1,200 cards) per slice. Tracked per card in `priceRefreshedAt`. |
+| `GET /api/cron/backfill-prices` | **every hour** | Pulls up to **one year of history** for up to 15 cards (`?limit=`, max 50) that were never backfilled — listed cards first. A card is backfilled once (`priceBackfilledAt`); a card that fails 5 times leaves the queue (`priceBackfillAttempts`, reset to 0 to retry). **Pauses automatically** when fewer than 2,000 JustTCG calls are left this month, so the refresh never runs dry; resumes after the monthly reset. |
+| `GET /api/cron/report-prices` | **once a day** | Posts the daily health report (below). Makes no JustTCG calls. |
 
-Both need the same `Authorization: Bearer <CRON_SECRET>` header as the other cron endpoints above. Add both to cron-job.org alongside the existing two jobs, at their respective cadences.
+All three need the same `Authorization: Bearer <CRON_SECRET>` header as the other cron endpoints above.
 
-Set `DISCORD_ALERTS_WEBHOOK_URL` (optional) to post a Discord alert on every run of either job — success or failure, including a run that returned 200 but had some cards fail. Leave it unset to skip Discord entirely.
+**Budget at this pace:** refresh ≈ 1,600 calls a month; backfill uses the rest (≈ 7,000–8,000 a month), so a full year of history for every catalog card takes about 4 months after a full catalog import. A bigger JustTCG plan shortens that without code changes (raise the backfill schedule or `?limit=`).
+
+**Alerts and monitoring** (set `DISCORD_ALERTS_WEBHOOK_URL`; leave it unset to skip Discord):
+
+- **Status changes, immediately:** a job posts to Discord only when it **starts failing** (❌) and when it **recovers** (✅ "Recovered —"), not on every slice. Each job's last run and status are stored in the `JobState` table.
+- **Daily price report** (`report-prices`), built from the data itself so it proves the jobs are moving forward:
+  - Backfill: cards done / waiting / given up, new cards backfilled and history rows added in the last 24 h, an ETA, and whether it is paused for quota.
+  - Refresh: listed cards priced today, catalog cards refreshed in the last 7 days, duplicate same-day rows (must be 0).
+  - JustTCG calls left this month and today.
+  - It turns **red with warnings** when a job has not run recently or is failing, when the backfill made no progress although cards and quota were available, when listed cards lack a recent price, when catalog cards are more than 8 days old, or when duplicate rows appear.
 
 ### Cron jobs (performance report)
 

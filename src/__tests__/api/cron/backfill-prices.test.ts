@@ -5,7 +5,9 @@ import { NextRequest } from "next/server";
  * GET /api/cron/backfill-prices is the expensive, occasional half of the
  * two-tier pricing strategy: one v2 call per card, pulling up to a year of
  * history. Self-resuming — only queries cards with priceBackfilledAt: null,
- * and marks each one done on success so it's never re-pulled.
+ * and marks each one done on success so it's never re-pulled. Runs in short
+ * slices (default 15 cards) and pauses while JustTCG's monthly quota is
+ * below the reserve kept for refresh-prices. JobState is mocked.
  */
 
 const mockPrisma = vi.hoisted(() => ({
@@ -15,10 +17,18 @@ const mockPrisma = vi.hoisted(() => ({
 }));
 
 const mockFetchCardVariants = vi.hoisted(() => vi.fn());
+const mockGetLastJustTcgQuota = vi.hoisted(() => vi.fn());
+const mockJobState = vi.hoisted(() => ({
+  recordJobRun: vi.fn(),
+  saveJustTcgQuota: vi.fn(),
+  loadJustTcgQuota: vi.fn(),
+}));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/jobState", () => mockJobState);
 vi.mock("@/lib/pricing/justtcg", () => ({
   fetchCardVariants: mockFetchCardVariants,
+  getLastJustTcgQuota: mockGetLastJustTcgQuota,
   usdMarket: (variant: any) =>
     variant.markets.find((m: any) => m.currency === "USD") ?? variant.markets[0] ?? null,
   pickPricedVariants: (variants: any[]) => {
@@ -62,6 +72,8 @@ describe("GET /api/cron/backfill-prices", () => {
     mockPrisma.pokemonCardCatalog.count.mockResolvedValue(0);
     mockPrisma.riftboundCardCatalog.count.mockResolvedValue(0);
     mockPrisma.priceHistory.findMany.mockResolvedValue([]);
+    mockGetLastJustTcgQuota.mockReturnValue(null);
+    mockJobState.loadJustTcgQuota.mockResolvedValue(null);
   });
 
   it("returns 401 when the bearer token is wrong", async () => {
@@ -216,12 +228,19 @@ describe("GET /api/cron/backfill-prices", () => {
     expect(data.gaveUp).toBe(3);
   });
 
-  it("caps the per-run limit at 950 even if a larger value is requested", async () => {
+  it("caps the per-run limit at 50 even if a larger value is requested", async () => {
     await GET(makeRequest("test-cron-secret", "?limit=5000"));
 
     expect(mockPrisma.pokemonCardCatalog.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 950 })
+      expect.objectContaining({ take: 50 })
     );
+  });
+
+  it("takes 15 cards per slice by default", async () => {
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockPrisma.pokemonCardCatalog.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ take: 15 }));
+    expect(mockPrisma.riftboundCardCatalog.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({ take: 15 }));
   });
 
   it("gives Riftbound the remaining slice of the limit after Pokemon cards are counted", async () => {
@@ -244,5 +263,61 @@ describe("GET /api/cron/backfill-prices", () => {
     const data = await res.json();
 
     expect(data.remaining).toBe(10);
+  });
+
+  it("pauses without any JustTCG call when the saved quota is fresh and below the 2,000 reserve", async () => {
+    mockJobState.loadJustTcgQuota.mockResolvedValue({ monthlyRemaining: 1500, at: new Date().toISOString() });
+    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }]);
+
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+
+    expect(data).toMatchObject({ paused: true, backfilled: 0, monthlyRemaining: 1500 });
+    expect(mockFetchCardVariants).not.toHaveBeenCalled();
+    expect(mockPrisma.pokemonCardCatalog.findMany).not.toHaveBeenCalled();
+    // Pausing is expected behaviour, not a failure — recorded as ok.
+    expect(mockJobState.recordJobRun).toHaveBeenCalledWith("backfill-prices", expect.objectContaining({ ok: true }));
+  });
+
+  it("ignores a saved quota older than 48 h, so a monthly reset is never missed", async () => {
+    const stale = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+    mockJobState.loadJustTcgQuota.mockResolvedValue({ monthlyRemaining: 1500, at: stale });
+    mockPrisma.pokemonCardCatalog.findMany
+      .mockResolvedValueOnce([{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }])
+      .mockResolvedValueOnce([]);
+    mockFetchCardVariants.mockResolvedValue([CARD_WITH_HISTORY]);
+
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+
+    expect(data.paused).toBe(false);
+    expect(data.backfilled).toBe(1);
+    expect(mockFetchCardVariants).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a card with no priced variants as noData, but still marks it backfilled", async () => {
+    mockPrisma.pokemonCardCatalog.findMany
+      .mockResolvedValueOnce([{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }])
+      .mockResolvedValueOnce([]);
+    mockFetchCardVariants.mockResolvedValue([]);
+
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+
+    expect(data).toMatchObject({ backfilled: 1, noData: 1, failed: 0 });
+    expect(mockPrisma.priceHistory.createMany).not.toHaveBeenCalled();
+    expect(mockPrisma.pokemonCardCatalog.update).toHaveBeenCalledWith({
+      where: { id: "pkm-1" },
+      data: { priceBackfilledAt: expect.any(Date) },
+    });
+  });
+
+  it("records the run via recordJobRun, failing when a card failed", async () => {
+    mockPrisma.pokemonCardCatalog.findMany
+      .mockResolvedValueOnce([{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }])
+      .mockResolvedValueOnce([]);
+    mockFetchCardVariants.mockRejectedValue(new Error("JustTCG request failed: 500"));
+
+    await GET(makeRequest("test-cron-secret"));
+
+    expect(mockJobState.saveJustTcgQuota).toHaveBeenCalled();
+    expect(mockJobState.recordJobRun).toHaveBeenCalledWith("backfill-prices", expect.objectContaining({ ok: false }));
   });
 });

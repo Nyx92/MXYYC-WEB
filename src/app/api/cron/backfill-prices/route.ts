@@ -6,12 +6,14 @@ import {
   pickPricedVariants,
   usdMarket,
   runWithConcurrency,
+  getLastJustTcgQuota,
   type JustTcgMarket,
 } from "@/lib/pricing/justtcg";
+import { loadJustTcgQuota, recordJobRun, saveJustTcgQuota } from "@/lib/jobState";
 import { postCronResult } from "@/lib/discord";
 
 /**
- * GET /api/cron/backfill-prices?limit=500 ← recommended schedule: twice a month (cron-job.org)
+ * GET /api/cron/backfill-prices ← schedule: every hour (cron-job.org)
  * POST /api/cron/backfill-prices ← kept for local curl testing
  *
  * The EXPENSIVE, occasional half of the two-tier pricing strategy (see also
@@ -44,6 +46,19 @@ type PendingCard = { id: string; tcgPlayerId: string | null; language?: string }
 // priceBackfillAttempts in schema.prisma) instead of being retried — and
 // burning JustTCG's daily request budget — on every run forever.
 const MAX_BACKFILL_ATTEMPTS = 5;
+
+// Runs in short slices: cron-job.org closes requests after 30 s, so a slice
+// takes at most DEFAULT_LIMIT cards (overridable with ?limit=, capped at
+// MAX_LIMIT) and stops starting new cards after TIME_BUDGET_MS.
+const DEFAULT_LIMIT = 15;
+const MAX_LIMIT = 50;
+const TIME_BUDGET_MS = 15_000;
+// JustTCG's Starter plan allows 10,000 calls a month. The backfill pauses
+// below this many remaining so the refresh job (~1,600 calls a month) never
+// runs dry before the monthly reset. A saved quota older than
+// QUOTA_MAX_AGE_MS is ignored, so a reset is never missed.
+const MONTHLY_RESERVE = 2_000;
+const QUOTA_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
 /**
  * Writes one variant's full backfill in a small, fixed number of queries
@@ -119,7 +134,7 @@ async function backfillCard(
   tcgPlayerId: string,
   language: string | undefined,
   capturedAt: Date
-) {
+): Promise<number> {
   const variants = await fetchCardVariants({
     tcgPlayerId,
     game,
@@ -135,6 +150,7 @@ async function backfillCard(
   await runWithConcurrency(picks, 5, ({ label, variant }) =>
     backfillVariant(catalogIdField, catalogId, game, label, usdMarket(variant) as JustTcgMarket, capturedAt)
   );
+  return picks.length;
 }
 
 // Best-effort: a failure to record the attempt must not mask the original
@@ -178,18 +194,28 @@ async function runBackfill(req: NextRequest): Promise<NextResponse> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[cron/backfill-prices] Crashed:", msg);
-    await postCronResult({ job: "backfill-prices", ok: false, summary: `Crashed: ${msg}` });
+    await recordJobRun("backfill-prices", { ok: false, summary: `Crashed: ${msg}` });
     return NextResponse.json({ error: "backfill-prices crashed", message: msg }, { status: 500 });
   }
 }
 
 async function backfillPrices(req: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(req.url);
-  // Default 500, not the route's own 950 cap on its own — the daily refresh
-  // job (now covering the full catalog too) needs headroom in the same
-  // shared JustTCG daily budget. See the design doc's Budget note.
-  const requestedLimit = Number(searchParams.get("limit") ?? "500");
-  const limit = Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 500, 950);
+  const requestedLimit = Number(searchParams.get("limit") ?? DEFAULT_LIMIT);
+  const limit = Math.min(Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : DEFAULT_LIMIT, MAX_LIMIT);
+  const startedAt = Date.now();
+
+  // Quota guard (see MONTHLY_RESERVE). Checked again after every card below.
+  const saved = await loadJustTcgQuota();
+  const savedIsFresh = saved != null && Date.now() - new Date(saved.at).getTime() < QUOTA_MAX_AGE_MS;
+  const belowReserve = (q: { monthlyRemaining: number | null } | null) =>
+    q?.monthlyRemaining != null && q.monthlyRemaining < MONTHLY_RESERVE;
+  if (savedIsFresh && belowReserve(saved)) {
+    const summary = `Paused: ${saved!.monthlyRemaining} JustTCG calls left this month (reserve ${MONTHLY_RESERVE} kept for refresh-prices)`;
+    await recordJobRun("backfill-prices", { ok: true, summary, data: { paused: true, monthlyRemaining: saved!.monthlyRemaining } });
+    return NextResponse.json({ backfilled: 0, failed: 0, paused: true, monthlyRemaining: saved!.monthlyRemaining });
+  }
+  let paused = false;
 
   const capturedAt = new Date(new Date().toISOString().slice(0, 10));
   // No listings filter here: every pending card is eligible, listed or not.
@@ -238,7 +264,13 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
   const pokemonCards = await takeCards("pokemonCardCatalog", limit);
   const riftboundCards = await takeCards("riftboundCardCatalog", limit - pokemonCards.length);
 
-  const results = { backfilled: 0, failed: 0, errors: [] as string[] };
+  // noData = backfilled, but JustTCG had no price at all for the card (its
+  // chart stays empty); skipped = left for the next slice (time or quota).
+  const results = { backfilled: 0, noData: 0, failed: 0, skipped: 0, errors: [] as string[] };
+  const shouldStop = () => paused || Date.now() - startedAt > TIME_BUDGET_MS;
+  const checkQuota = () => {
+    if (belowReserve(getLastJustTcgQuota())) paused = true;
+  };
 
   // Cards run several at a time instead of one at a time — each one pays a
   // JustTCG round trip plus several database round trips, so processing them
@@ -248,8 +280,13 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
   const BACKFILL_CONCURRENCY = 5;
 
   await runWithConcurrency(pokemonCards, BACKFILL_CONCURRENCY, async (card) => {
+    if (shouldStop()) {
+      results.skipped++;
+      return;
+    }
     try {
-      await backfillCard("pokemonCardId", card.id, "POKEMON", card.tcgPlayerId as string, card.language, capturedAt);
+      const written = await backfillCard("pokemonCardId", card.id, "POKEMON", card.tcgPlayerId as string, card.language, capturedAt);
+      if (written === 0) results.noData++;
       await prisma.pokemonCardCatalog.update({
         where: { id: card.id },
         data: { priceBackfilledAt: new Date() },
@@ -262,11 +299,17 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       console.error("[cron/backfill-prices] Failed to backfill card:", card.id, msg);
       await recordFailedAttempt("pokemonCardCatalog", card.id);
     }
+    checkQuota();
   });
 
   await runWithConcurrency(riftboundCards, BACKFILL_CONCURRENCY, async (card) => {
+    if (shouldStop()) {
+      results.skipped++;
+      return;
+    }
     try {
-      await backfillCard("riftboundCardId", card.id, "RIFTBOUND", card.tcgPlayerId as string, undefined, capturedAt);
+      const written = await backfillCard("riftboundCardId", card.id, "RIFTBOUND", card.tcgPlayerId as string, undefined, capturedAt);
+      if (written === 0) results.noData++;
       await prisma.riftboundCardCatalog.update({
         where: { id: card.id },
         data: { priceBackfilledAt: new Date() },
@@ -279,6 +322,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       console.error("[cron/backfill-prices] Failed to backfill card:", card.id, msg);
       await recordFailedAttempt("riftboundCardCatalog", card.id);
     }
+    checkQuota();
   });
 
   // Cards that used up their attempts are out of the queue but still need a
@@ -296,21 +340,27 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
   ]);
   const gaveUp = givenUpPokemon + givenUpRiftbound;
 
+  const remaining = remainingPokemon + remainingRiftbound;
   const summary =
-    `Backfilled: ${results.backfilled}, Failed: ${results.failed}, Remaining: ${remainingPokemon + remainingRiftbound}` +
-    (gaveUp > 0 ? `, Gave up after ${MAX_BACKFILL_ATTEMPTS} attempts: ${gaveUp}` : "");
+    `Backfilled: ${results.backfilled} (no JustTCG data: ${results.noData}), Failed: ${results.failed}, Remaining: ${remaining}` +
+    (gaveUp > 0 ? `, Gave up after ${MAX_BACKFILL_ATTEMPTS} attempts: ${gaveUp}` : "") +
+    (paused ? ` — paused: JustTCG monthly reserve (${MONTHLY_RESERVE}) reached` : "");
   console.log(`[cron/backfill-prices] Done. ${summary}`);
-  await postCronResult({
-    job: "backfill-prices",
+  await saveJustTcgQuota();
+  await recordJobRun("backfill-prices", {
     ok: results.failed === 0,
     summary,
     errors: results.errors,
+    data: { backfilled: results.backfilled, noData: results.noData, failed: results.failed, skipped: results.skipped, remaining, gaveUp, paused },
   });
 
   return NextResponse.json({
     backfilled: results.backfilled,
+    noData: results.noData,
     failed: results.failed,
-    remaining: remainingPokemon + remainingRiftbound,
+    skipped: results.skipped,
+    paused,
+    remaining,
     gaveUp,
     ...(results.errors.length > 0 && { errors: results.errors }),
   });
