@@ -35,6 +35,12 @@ NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=""
 # Cron job auth — any long random string, must match Vercel env var
 CRON_SECRET=""
 
+# Card intake (MXYYC-TCG-IDENTIFIER → /admin/ingest). The identifier sends this
+# as "Authorization: Bearer <token>"; unset = the ingest endpoint is closed.
+INGEST_API_TOKEN=""
+# Account that owns every listing published from Card Intake (default below).
+INGEST_OWNER_EMAIL="admin@pokemon.com"
+
 # Email (Resend) — FROM_EMAIL is optional, defaults to Resend's onboarding sender
 RESEND_API_KEY=""
 FROM_EMAIL="MXYYC <noreply@example.com>"
@@ -210,6 +216,23 @@ How it behaves:
 
 To rebuild the full catalog, or to retry one unmatched Japanese set, see
 "Common tasks" in the tcg-index-sync README.
+
+### Card intake (scanned cards → listings)
+
+The primary way cards go on sale. MXYYC-TCG-IDENTIFIER (separate project) scans and identifies cards, then sends each one here; an admin reviews them before anything is listed.
+
+```
+identifier ── POST /api/admin/ingest/items (Bearer INGEST_API_TOKEN) ──► IngestItem (PENDING)
+admin      ── /admin/ingest/<batch> ── fix card / condition / price, approve ──► APPROVED
+admin      ── "Publish approved" ──► Listing (forSale, owner INGEST_OWNER_EMAIL) ──► PUBLISHED
+```
+
+- **One item per physical card**, keyed by the sha256 of its front scan: sending the same scan again creates nothing, and a published item is never published twice (`src/lib/ingest.ts`, `publishIngestItem`).
+- **Photos**: front and back scans, compressed to WebP in Supabase Storage under `card-images/ingest/`. They become the listing photos.
+- **Price**: the latest RAW (Near Mint) price in `PriceHistory` for the matched card, rounded **up** to the next S$0.50 (minimum S$1.00) — no JustTCG call. Cards with no price yet stay unpublished until the admin types one.
+- **Condition**: Near Mint by default; the admin can change it per card.
+- **Review page** (`/admin/ingest`, "Card Intake" in the admin menu): "Approve all confident" approves the cards the identifier was sure about; the rest show their top candidates, or take a TCGPlayer ID. Rejected cards are never listed.
+- **Setup**: set `INGEST_API_TOKEN` (long random string) here and as `MXYYC_INGEST_TOKEN` in the identifier's `.env`, with `MXYYC_API_URL` pointing at this site. The owner account (`INGEST_OWNER_EMAIL`) must exist.
 
 ## Stripe setup
 

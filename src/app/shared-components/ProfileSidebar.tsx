@@ -24,6 +24,7 @@ import SellOutlinedIcon from "@mui/icons-material/SellOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import DocumentScannerOutlinedIcon from "@mui/icons-material/DocumentScannerOutlined";
 import { useAuth } from "@/app/hooks/useAuth";
 
 // ── Nav items ─────────────────────────────────────────────────────────────────
@@ -38,15 +39,18 @@ const NAV_ITEMS = [
   { label: "Notifications", href: "/notifications", Icon: NotificationsNoneOutlinedIcon },
 ] as const;
 
-// Staff-only — mirrors ADMIN_ITEM in Navbar.tsx's dropdown, keep in sync.
-const ADMIN_ITEM = { label: "Pickup Requests", href: "/admin/collection-requests", Icon: Inventory2OutlinedIcon } as const;
+// Staff-only — mirrors ADMIN_ITEMS in Navbar.tsx's dropdown, keep in sync.
+const ADMIN_ITEMS = [
+  { label: "Pickup Requests", href: "/admin/collection-requests", Icon: Inventory2OutlinedIcon },
+  { label: "Card Intake", href: "/admin/ingest", Icon: DocumentScannerOutlinedIcon },
+] as const;
 
 const ACTIVE_BLUE = "#0053ff";
 
 export default function ProfileSidebar() {
   const pathname = usePathname();
   const { isAdmin } = useAuth();
-  const items = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS;
+  const items = isAdmin ? [...NAV_ITEMS, ...ADMIN_ITEMS] : NAV_ITEMS;
 
   return (
     <Box

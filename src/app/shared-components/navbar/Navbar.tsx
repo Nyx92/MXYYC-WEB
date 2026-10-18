@@ -30,6 +30,7 @@ import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import DocumentScannerOutlinedIcon from "@mui/icons-material/DocumentScannerOutlined";
 import { useAuth } from "@/app/hooks/useAuth";
 import { useWatchlistAnimation } from "@/app/context/WatchlistAnimationContext";
 import { useCart } from "@/app/context/CartContext";
@@ -47,7 +48,10 @@ const ACCOUNT_ITEMS = [
 ] as const;
 
 // Staff-only — appended to the dropdown below only when session.user.role === "admin".
-const ADMIN_ITEM = { label: "Pickup Requests", href: "/admin/collection-requests", Icon: Inventory2OutlinedIcon } as const;
+const ADMIN_ITEMS = [
+  { label: "Pickup Requests", href: "/admin/collection-requests", Icon: Inventory2OutlinedIcon },
+  { label: "Card Intake", href: "/admin/ingest", Icon: DocumentScannerOutlinedIcon },
+] as const;
 
 const DARK = "#ffffff";
 
@@ -316,7 +320,7 @@ export default function Navbar() {
                   {/* Account nav items — component={Link}, same prefetch
                       rationale as the Cart/Watchlist/Notifications buttons
                       above. */}
-                  {[...ACCOUNT_ITEMS, ...(user?.role === "admin" ? [ADMIN_ITEM] : [])].map(({ label, href, Icon }) => (
+                  {[...ACCOUNT_ITEMS, ...(user?.role === "admin" ? ADMIN_ITEMS : [])].map(({ label, href, Icon }) => (
                     <MenuItem key={href} component={Link} href={href} onClick={handleCloseMenu}>
                       <ListItemIcon sx={{ minWidth: 32 }}>
                         <Icon sx={{ fontSize: 18, color: "rgba(255,255,255,0.6)" }} />

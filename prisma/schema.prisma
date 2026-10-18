@@ -176,6 +176,7 @@ model PokemonCardCatalog {
   imageUrl       String?
   listings       Listing[]
   priceHistory   PriceHistory[]
+  ingestItems    IngestItem[]
   // Set once GET /api/cron/backfill-prices has pulled this card's full year
   // of history from JustTCG. Null means "never backfilled" — that's the
   // resumable job's queue, so a card is only ever deep-pulled once, not
@@ -228,6 +229,7 @@ model RiftboundCardCatalog {
   tcgPlayerId     String?   @unique
   listings        Listing[]
   priceHistory    PriceHistory[]
+  ingestItems     IngestItem[]
   // See PokemonCardCatalog.priceBackfilledAt / priceBackfillAttempts above.
   priceBackfilledAt DateTime?
   priceBackfillAttempts Int @default(0)
@@ -282,6 +284,8 @@ model Listing {
   // enforced at the application layer via Listing.inAuction).
   inAuction    Boolean           @default(false)
   auctions     Auction[]
+  // Set when this listing came from a scanned-card ingest (see IngestItem).
+  ingestItem   IngestItem?
 
   // In-person collection: set while this card is earmarked for pickup at the
   // physical shop (mutually exclusive with forSale/inAuction at the
@@ -688,3 +692,63 @@ model JobState {
   data        Json?
   updatedAt   DateTime @updatedAt
 }
+
+// ─── Card ingestion ─────────────────────────────────────────────────────────
+// Scanned cards identified by MXYYC-TCG-IDENTIFIER arrive here through
+// POST /api/admin/ingest/items and wait for an admin to review them on
+// /admin/ingest. Only a published item becomes a Listing.
+
+// One scan run (normally one scan folder). Re-sending the same folder adds to
+// the same open batch.
+model IngestBatch {
+  id        String       @id @default(uuid())
+  name      String
+  game      String // "POKEMON" | "RIFTBOUND"
+  status    String       @default("OPEN") // "OPEN" | "CLOSED"
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  items     IngestItem[]
+
+  @@index([name, game, status])
+  @@index([createdAt(sort: Desc)])
+}
+
+// One scanned physical card.
+model IngestItem {
+  id      String      @id @default(uuid())
+  batch   IngestBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  batchId String
+
+  // sha256 of the front scan's bytes: the same scan sent twice is one item.
+  ingestKey  String @unique
+  game       String // "POKEMON" | "RIFTBOUND"
+  sourceFile String
+
+  // PENDING → APPROVED | REJECTED → PUBLISHED (APPROVED/REJECTED can go back to PENDING)
+  status     String  @default("PENDING")
+  confidence String // identifier's: "perfect" | "high" | "medium" | "low" | "none"
+  method     String? // "ocr" | "vision"
+
+  // The identified (or admin-corrected) catalog card. Null = not identified.
+  pokemonCard     PokemonCardCatalog?   @relation(fields: [pokemonCardId], references: [id], onDelete: Restrict)
+  pokemonCardId   String?
+  riftboundCard   RiftboundCardCatalog? @relation(fields: [riftboundCardId], references: [id], onDelete: Restrict)
+  riftboundCardId String?
+
+  candidates Json     @default("[]") // [{ catalogId, label, score }] — other likely cards for the reviewer
+  ocr        Json? // fields the identifier read, shown to the reviewer
+  imageUrls  String[] // front first, then back
+
+  condition        String @default("Near Mint")
+  marketPriceCents Int? // latest RAW market price (SGD) for the matched card, from PriceHistory
+  priceCents       Int? // price to list at — suggested from the market price, editable
+
+  listing   Listing? @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  listingId String?  @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([batchId, status])
+}
+
