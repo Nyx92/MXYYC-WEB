@@ -59,7 +59,7 @@ export default function DuckReveal() {
           alignItems: "center",
           justifyContent: "center",
           overflow: "hidden",
-          ...pageBackgroundSx("/collateral/Riftbound_BG.jpg"),
+          ...pageBackgroundSx("/collateral/Riftbound_BG.webp"),
         }}
       >
         {/* Revealed centre text */}
@@ -170,13 +170,14 @@ export default function DuckReveal() {
             width: "clamp(347px, 53vw, 827px)",
           }}
         >
+          {/* Lazy (no priority): this section is at the bottom of the home
+              page, so it must not compete with the card images at load. */}
           <Image
             src="/collateral/duck_left.png"
             alt="duck"
             width={827}
             height={827}
             style={{ width: "100%", height: "auto" }}
-            priority
           />
         </Box>
 
@@ -201,7 +202,6 @@ export default function DuckReveal() {
             width={827}
             height={827}
             style={{ width: "100%", height: "auto" }}
-            priority
           />
         </Box>
       </Box>

@@ -21,6 +21,11 @@ const mockPrisma = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+// unstable_cache needs the Next.js server's cache. Here it only passes the
+// call through, as JSON — the same plain shape the real cache returns.
+vi.mock("next/cache", () => ({
+  unstable_cache: (fn: () => Promise<unknown>) => async () => JSON.parse(JSON.stringify(await fn())),
+}));
 
 import { GET } from "@/app/api/home/featured/route";
 

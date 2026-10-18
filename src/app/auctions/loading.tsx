@@ -18,7 +18,7 @@ export default function AuctionsLoading() {
     <Box
       component="main"
       sx={{
-        ...pageBackgroundSx("/collateral/Riftbound_BG_Ships.jpg"),
+        ...pageBackgroundSx("/collateral/Riftbound_BG_Ships.webp"),
         mt: `-${NAVBAR_HEIGHT}px`,
         pt: { xs: "88px", md: "112px" },
         minHeight: "100vh",

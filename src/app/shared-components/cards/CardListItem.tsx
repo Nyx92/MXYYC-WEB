@@ -57,6 +57,9 @@ interface CardListItemProps {
   // else's already-sold, pending-pickup card). Defaults to false so every
   // existing usage keeps showing the button exactly as before.
   hideWatchlist?: boolean;
+  // Load the image at once instead of lazily — for the first few tiles,
+  // which are on screen when the page opens.
+  eager?: boolean;
 }
 
 // Wrapped in React.memo — this tile is rendered up to PAGE_SIZE (24) times
@@ -76,6 +79,7 @@ function CardListItem({
   onWatchlistToggle,
   auctionOverride,
   hideWatchlist = false,
+  eager = false,
 }: CardListItemProps) {
   const { userId, isLoggedIn } = useAuth();
   const { triggerFly, adjustCount } = useWatchlistAnimation();
@@ -228,7 +232,10 @@ function CardListItem({
               src={card.imageUrls?.[0] || "/placeholder.png"}
               alt={card.title}
               fill
-              sizes="138px"
+              // The image box is 138px minus 2 × 12px padding. Matching it
+              // lets a 2× screen pick the 256px variant (~18 KB) over 384px (~32 KB).
+              sizes="114px"
+              loading={eager ? "eager" : "lazy"}
               style={{
                 objectFit: "contain",
                 objectPosition: "center",

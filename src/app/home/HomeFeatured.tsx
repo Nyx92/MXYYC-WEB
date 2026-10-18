@@ -23,7 +23,7 @@ const cardItemVariants: Variants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
 };
 
-interface FeaturedData {
+export interface FeaturedData {
   bestSellers: CardItem[];
   highestTransacted: CardItem[];
   newlyListed: CardItem[];
@@ -36,9 +36,15 @@ interface SectionRowProps {
   cards: CardItem[];
   onCardClick: (card: CardItem) => void;
   watchlistedIds: Set<string>;
+  // Load the first tiles' images at once — only for a row that is on screen
+  // when the page opens.
+  eager?: boolean;
 }
 
-function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds }: SectionRowProps) {
+// How many tiles per on-screen row load their image at once (not lazily).
+const EAGER_CARDS = 4;
+
+function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds, eager = false }: SectionRowProps) {
   return (
     <Box sx={{ mb: 3 }}>
       <motion.div
@@ -92,6 +98,7 @@ function SectionRow({ title, subtitle, cards, onCardClick, watchlistedIds }: Sec
                 card={card}
                 watchlisted={watchlistedIds.has(card.id)}
                 onClick={onCardClick}
+                eager={eager && i < EAGER_CARDS}
               />
             </motion.div>
           ))}
@@ -185,6 +192,7 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
               card={auctionToCard(auction)}
               watchlisted={watchlistedIds.has(auction.cardId)}
               onClick={onCardClick}
+              eager={i < EAGER_CARDS}
               auctionOverride={{
                 currentBid:  auction.currentBid,
                 startingBid: auction.startingBid,
@@ -201,10 +209,13 @@ function AuctionRow({ auctions, watchlistedIds, onCardClick }: { auctions: Aucti
 
 // ── Main featured component ───────────────────────────────────────────────────
 
-export default function HomeFeatured() {
+// initialData comes from the server render (src/app/page.tsx), so the cards
+// and their images are in the first HTML. null means the server could not
+// load it — then this falls back to fetching it in the browser.
+export default function HomeFeatured({ initialData = null }: { initialData?: FeaturedData | null }) {
   const router = useRouter();
-  const [data,       setData]       = useState<FeaturedData | null>(null);
-  const [loading,    setLoading]    = useState(true);
+  const [data,       setData]       = useState<FeaturedData | null>(initialData);
+  const [loading,    setLoading]    = useState(!initialData);
   const [fetchError, setFetchError] = useState(false);
   const watchlistedIds = useWatchlistIds();
 
@@ -218,6 +229,7 @@ export default function HomeFeatured() {
   // a nav link while this fetch is in flight visibly waits for it to finish
   // before the URL actually changes.
   useEffect(() => {
+    if (initialData) return;
     fetch("/api/home/featured")
       .then((r) => r.json())
       .then((json) => {
@@ -232,7 +244,7 @@ export default function HomeFeatured() {
           setLoading(false);
         });
       });
-  }, []);
+  }, [initialData]);
 
   // Stabilized so CardListItem's React.memo is actually effective — same
   // rationale as MarketPlace.tsx's handleCardClick.
@@ -273,6 +285,7 @@ export default function HomeFeatured() {
         cards={data?.bestSellers ?? []}
         onCardClick={handleCardClick}
         watchlistedIds={watchlistedIds}
+        eager
       />
       <SectionRow
         title="Highest Transacted."

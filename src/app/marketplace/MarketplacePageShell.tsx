@@ -22,7 +22,7 @@ export default function MarketplacePageShell({ children }: { children: React.Rea
     <Box
       component="main"
       sx={{
-        ...pageBackgroundSx("/collateral/Riftbound_BG_Market.jpg"),
+        ...pageBackgroundSx("/collateral/Riftbound_BG_Market.webp"),
         mt: `-${NAVBAR_HEIGHT}px`,
         pt: { xs: "88px", md: "112px" },
         minHeight: "100vh",

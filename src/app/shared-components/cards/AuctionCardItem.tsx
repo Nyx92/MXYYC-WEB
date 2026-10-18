@@ -172,7 +172,7 @@ function AuctionCardItem({ auction, watchlisted: initialWatchlisted = false }: A
               src={auction.card.imageUrls?.[0] || "/placeholder.png"}
               alt={auction.card.title}
               fill
-              sizes="138px"
+              sizes="114px" // 138px box minus padding — see CardListItem.tsx
               style={{
                 objectFit: "contain",
                 objectPosition: "center",

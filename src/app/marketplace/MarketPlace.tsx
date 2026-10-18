@@ -362,12 +362,14 @@ export default function Marketplace({
                   style={{ display: "flex", flexWrap: "wrap", gap: "16px", justifyContent: "center" }}
                 >
                   {filteredProducts.length > 0 ? (
-                    filteredProducts.map((product) => (
+                    filteredProducts.map((product, i) => (
                       <motion.div key={product.id} variants={cardVariants}>
                         <CardListItem
                           card={product}
                           watchlisted={watchlistedIds.has(product.id)}
                           onClick={handleCardClick}
+                          // The first row is on screen at load — don't wait for the lazy-load check.
+                          eager={i < 4}
                         />
                       </motion.div>
                     ))

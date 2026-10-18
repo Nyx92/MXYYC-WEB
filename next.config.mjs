@@ -7,6 +7,10 @@ import { withSentryConfig } from "@sentry/nextjs/config";
 const nextConfig = {
   // ===== IMAGE OPTIMIZATION SETTINGS =====
   images: {
+    // Card images never change in place (each upload gets a new random file
+    // name), so keep resized copies for 31 days instead of the 4-hour
+    // default: fewer cold-cache misses and fewer Vercel transformations.
+    minimumCacheTTL: 2678400,
     // remotePatterns is a SECURITY allow-list.
     // next/image will only load external images whose URL matches
     // one of these patterns.
