@@ -158,3 +158,35 @@ describe("Price cron jobs against a real database", () => {
     expect(await duplicateRows()).toEqual([]);
   });
 });
+
+describe("PriceHistory protection", () => {
+  async function cardWithHistory() {
+    const card = await createCatalogCard({ tcgPlayerId: `tcg-${Math.random().toString(36).slice(2)}` });
+    await prisma.priceHistory.create({
+      data: { game: "POKEMON", pokemonCardId: card.id, variant: "RAW", priceCents: 100, capturedAt: new Date("2026-01-01") },
+    });
+    return card;
+  }
+
+  it("blocks DELETE and TRUNCATE on PriceHistory", async () => {
+    await cardWithHistory();
+    await expect(prisma.priceHistory.deleteMany()).rejects.toThrow(/cannot be deleted/);
+    await expect(prisma.$executeRawUnsafe(`TRUNCATE "PriceHistory"`)).rejects.toThrow(/cannot be deleted/);
+    expect(await prisma.priceHistory.count()).toBe(1);
+  });
+
+  it("blocks deleting a catalog card that has price history", async () => {
+    const card = await cardWithHistory();
+    await expect(prisma.pokemonCardCatalog.delete({ where: { id: card.id } })).rejects.toThrow();
+    expect(await prisma.priceHistory.count()).toBe(1);
+  });
+
+  it("allows a delete inside a transaction that turns the block off", async () => {
+    await cardWithHistory();
+    await prisma.$transaction([
+      prisma.$executeRawUnsafe(`SET LOCAL mxyyc.allow_price_history_delete = 'on'`),
+      prisma.priceHistory.deleteMany(),
+    ]);
+    expect(await prisma.priceHistory.count()).toBe(0);
+  });
+});

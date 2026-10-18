@@ -10,7 +10,8 @@ echo "🗑️  Resetting database..."
 echo "   This project has no prisma/migrations history (schema is managed via"
 echo "   'prisma db push'), so this pushes schema.prisma and reseeds mock"
 echo "   data. PokemonCardCatalog, RiftboundCardCatalog, and PriceHistory are"
-echo "   never touched (guarded below) — everything else will be lost."
+echo "   never touched (guarded below, and PriceHistory has a delete-blocking"
+echo "   trigger) — everything else will be lost."
 echo ""
 
 # No --force-reset here on purpose: that flag drops and recreates the
@@ -22,6 +23,8 @@ echo ""
 # row-count check below can't detect), Prisma prompts/aborts instead.
 BEFORE=$(pnpm exec tsx prisma/countPreservedTables.ts)
 pnpm exec prisma db push
+# Re-apply the PriceHistory delete block (Prisma does not manage triggers).
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/protect-price-history.sql
 AFTER=$(pnpm exec tsx prisma/countPreservedTables.ts)
 
 if [ "$BEFORE" != "$AFTER" ]; then

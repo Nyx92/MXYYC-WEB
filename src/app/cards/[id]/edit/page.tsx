@@ -56,19 +56,14 @@ export default function EditCardPage() {
         id: card.id,
         game: card.game,
         title: card.title,
+        setName: card.setName ?? "",
         price: card.price,
         condition: card.condition,
-        language: card.language ?? "",
         tcgPlayerId: card.tcgPlayerId ?? "",
         description: card.description ?? "",
         ownerId: card.owner?.id ?? "",
         forSale: card.forSale,
-        setName: card.setName ?? "",
-        rarity: card.rarity ?? "",
         imageUrls: card.imageUrls ?? [],
-        cardNumber: card.cardNumber ?? "",
-        type: card.type ?? "",
-        supertype: card.supertype ?? "",
       }}
     />
   );

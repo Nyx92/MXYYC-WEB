@@ -15,8 +15,9 @@
 //     cards are added to the catalog) picks up only what's missing.
 //
 // Run with: pnpm seed:riftbound-listings
-// Assumes prisma.riftboundCardCatalog is already populated (run the normal
-// seed first) and that ash/misty already exist as users.
+// Assumes prisma.riftboundCardCatalog is already populated (run
+// `pnpm update-catalog`) and that ash/misty already exist as users (run the
+// normal seed first).
 
 import { PrismaClient } from "@prisma/client";
 import { createClient } from "@supabase/supabase-js";

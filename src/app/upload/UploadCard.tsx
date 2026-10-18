@@ -17,7 +17,6 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 
-import { POKEMON_RARITIES, POKEMON_LANGUAGES } from "@/constants/pokemon";
 import {
   RAW_GRADES,
   PSA_GRADES,
@@ -25,35 +24,25 @@ import {
   CGC_GRADES,
   SGC_GRADES,
 } from "@/constants/grades";
-import { RIFTBOUND_TYPES, RIFTBOUND_SUPERTYPES_BY_TYPE } from "@/lib/riftboundCatalog";
-import {
-  applyCatalogMatchToForm,
-  BLANK_CATALOG_IDENTITY_FIELDS,
-  type CatalogMatch,
-} from "@/lib/catalogLookupForm";
 
 type ImageSlot =
   | { kind: "existing"; url: string }
   | { kind: "new"; file: File; previewUrl: string };
 
+// What GET /api/catalog/lookup returns for a match. Riftbound lookups also
+// include imageUrl, for the "Card found" preview image.
+interface CatalogMatch {
+  title: string;
+  setName: string | null;
+  rarity: string | null;
+  imageUrl?: string;
+}
+
 type CatalogLookup =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "not_found" }
-  | {
-      status: "found";
-      // Riftbound lookups additionally include imageUrl (no schema
-      // equivalent for Pokemon) for the "Card found" preview image.
-      catalog: CatalogMatch & { imageUrl?: string };
-    };
-
-// Type and supertype are locked together for these two types — there's no
-// real choice to present, so the Supertype field is hidden and the value is
-// set automatically whenever Type changes to one of them.
-const FIXED_SUPERTYPE_BY_TYPE: Record<string, string> = {
-  Rune: "Basic",
-  Battlefield: "",
-};
+  | { status: "found"; catalog: CatalogMatch };
 
 function inferConditionType(condition: string): string {
   if ((PSA_GRADES as readonly string[]).includes(condition)) return "PSA";
@@ -67,19 +56,14 @@ interface CardInitialData {
   id: string;
   game: "POKEMON" | "RIFTBOUND";
   title: string;
+  setName: string;
   price: number | null;
   condition: string;
-  language: string;
   tcgPlayerId: string;
   description: string;
   ownerId: string;
   forSale: boolean;
-  setName: string;
-  rarity: string;
   imageUrls: string[];
-  cardNumber?: string;
-  type?: string;
-  supertype?: string;
 }
 
 interface UploadCardProps {
@@ -91,20 +75,13 @@ export default function UploadCard({ initialData }: UploadCardProps) {
 
   const [form, setForm] = useState(() => ({
     game: initialData?.game ?? "",
-    title: initialData?.title ?? "",
     price: initialData?.price != null ? String(initialData.price) : "",
     conditionType: initialData ? inferConditionType(initialData.condition) : "",
     condition: initialData?.condition ?? "",
-    language: initialData?.language ?? "",
     tcgPlayerId: initialData?.tcgPlayerId ?? "",
     description: initialData?.description ?? "",
     ownerId: initialData?.ownerId ?? "",
     forSale: initialData?.forSale ?? true,
-    setName: initialData?.setName ?? "",
-    rarity: initialData?.rarity ?? "",
-    cardNumber: initialData?.cardNumber ?? "",
-    type: initialData?.type ?? "",
-    supertype: initialData?.supertype ?? "",
   }));
 
   const [users, setUsers] = useState<
@@ -117,20 +94,16 @@ export default function UploadCard({ initialData }: UploadCardProps) {
   const [uploading, setUploading] = useState(false);
   const [successMsg, setSuccessMsg] = useState("");
 
-  // Only relevant in create mode — checks whether a catalog row already
-  // exists for the chosen (game, tcgPlayerId) so the form can show a
-  // read-only summary instead of catalog-identity fields the value would
-  // otherwise be silently ignored (an existing catalog row always wins over
-  // whatever's typed here, matched by tcgPlayerId).
+  // Create mode only: a listing must point at a card that is already in the
+  // catalog (the catalog is filled only by `pnpm update-catalog`), so the
+  // form looks the TCGPlayer id up and only allows submit once it is found.
   //
   // Only ever holds a *settled* (not_found/found) result, tagged with the
   // (game, tcgPlayerId) key it was resolved for. "idle" and "loading" are
-  // never stored — they're derived below by comparing this settled result's
-  // key against the currently-typed key, so the effect never needs to
-  // synchronously pre-arm a "loading" flag or reset to "idle" itself.
+  // derived below by comparing that key against the currently-typed one.
   const [catalogLookupResult, setCatalogLookupResult] = useState<
     | { key: string; found: false }
-    | { key: string; found: true; catalog: CatalogMatch & { imageUrl?: string } }
+    | { key: string; found: true; catalog: CatalogMatch }
     | null
   >(null);
   const catalogLookupActive = !isEditMode && !!form.game && !!form.tcgPlayerId.trim();
@@ -166,15 +139,6 @@ export default function UploadCard({ initialData }: UploadCardProps) {
     }
 
     const key = `${form.game}::${form.tcgPlayerId.trim()}`;
-    // A previous tcgPlayerId's match (if any) no longer applies to this one
-    // — clear it so a stale match doesn't linger in these now-possibly-
-    // visible, editable fields while the new lookup is in flight. This is a
-    // real side effect on user-editable form state (not a derivable value —
-    // these fields can be typed into directly while catalogFieldsVisible),
-    // so it can't be replaced with a render-time computation.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setForm((prev) => ({ ...prev, ...BLANK_CATALOG_IDENTITY_FIELDS }));
-
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
@@ -186,11 +150,6 @@ export default function UploadCard({ initialData }: UploadCardProps) {
           return;
         }
         setCatalogLookupResult({ key, found: true, catalog: data.catalog });
-        // The matched fields are hidden behind the "Card found" summary, but
-        // whatever's in them still gets submitted — backfill the real
-        // catalog values so submission doesn't send blanks the server
-        // requires (see catalogLookupForm.ts).
-        setForm((prev) => ({ ...prev, ...applyCatalogMatchToForm(data.catalog) }));
       } catch (err: any) {
         if (err.name !== "AbortError") setCatalogLookupResult({ key, found: false });
       }
@@ -209,11 +168,7 @@ export default function UploadCard({ initialData }: UploadCardProps) {
   };
 
   const handleGameChange = (newGame: string) => {
-    setForm((prev) => ({ ...prev, game: newGame, type: "", supertype: "" }));
-  };
-
-  const handleTypeChange = (newType: string) => {
-    setForm((prev) => ({ ...prev, type: newType, supertype: FIXED_SUPERTYPE_BY_TYPE[newType] ?? "" }));
+    setForm((prev) => ({ ...prev, game: newGame }));
   };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -253,12 +208,6 @@ export default function UploadCard({ initialData }: UploadCardProps) {
     );
   };
 
-  // In create mode, once an existing catalog row is found, its identity
-  // fields are hidden (and whatever's left in form.title/setName/etc. is
-  // ignored server-side — the existing row always wins). Edit mode always
-  // shows and requires them, since it's editing that catalog row directly.
-  const catalogFieldsVisible = isEditMode || catalogLookup.status !== "found";
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -270,12 +219,12 @@ export default function UploadCard({ initialData }: UploadCardProps) {
       !form.game ||
       !form.condition ||
       !form.ownerId ||
-      (catalogFieldsVisible && !form.title) ||
+      (!isEditMode && catalogLookup.status !== "found") ||
       images.length === 0 ||
       priceRequiredButMissing
     ) {
       return alert(
-        "Please fill in all required fields and include at least one image."
+        "Please fill in all required fields, use a TCG Player ID that is in the catalog, and include at least one image."
       );
     }
 
@@ -309,7 +258,10 @@ export default function UploadCard({ initialData }: UploadCardProps) {
       const method = isEditMode ? "PUT" : "POST";
 
       const res = await fetch(url, { method, body });
-      if (!res.ok) throw new Error("Failed to save card.");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save card.");
+      }
       const data = await res.json();
 
       setSuccessMsg(
@@ -321,20 +273,13 @@ export default function UploadCard({ initialData }: UploadCardProps) {
       if (!isEditMode) {
         setForm({
           game: "",
-          title: "",
           price: "",
           conditionType: "",
           condition: "",
-          language: "",
           tcgPlayerId: "",
           description: "",
           ownerId: "",
           forSale: false,
-          setName: "",
-          rarity: "",
-          cardNumber: "",
-          type: "",
-          supertype: "",
         });
         setImages([]);
         setCurrentImageIndex(0);
@@ -357,9 +302,6 @@ export default function UploadCard({ initialData }: UploadCardProps) {
         ? images[currentImageIndex].url
         : images[currentImageIndex].previewUrl
       : null;
-
-  const supertypeOptions = RIFTBOUND_SUPERTYPES_BY_TYPE[form.type] ?? [];
-  const supertypeIsFixed = form.type in FIXED_SUPERTYPE_BY_TYPE;
 
   return (
     <Box sx={{ px: 2, py: 6, display: "flex", justifyContent: "center" }}>
@@ -385,8 +327,8 @@ export default function UploadCard({ initialData }: UploadCardProps) {
           mb={4}
         >
           {isEditMode
-            ? "Update the card details. Existing images are shown — remove or add new ones as needed."
-            : "Add a new card to a specific user's collection and make it available in the marketplace."}
+            ? "Update the listing. The card itself comes from the catalog and cannot be changed here."
+            : "Add a card from the catalog to a specific user's collection and make it available in the marketplace."}
         </Typography>
 
         <form onSubmit={handleSubmit}>
@@ -421,8 +363,13 @@ export default function UploadCard({ initialData }: UploadCardProps) {
                 onChange={handleChange}
                 fullWidth
                 required
+                disabled={isEditMode}
                 sx={{ mb: 2 }}
-                helperText="Required for Price History — also used to match this card to an existing catalog entry"
+                helperText={
+                  isEditMode
+                    ? `${initialData!.title}${initialData!.setName ? ` · ${initialData!.setName}` : ""}`
+                    : "The card must already be in the catalog"
+                }
               />
 
               {!isEditMode && catalogLookup.status === "found" && (
@@ -467,126 +414,14 @@ export default function UploadCard({ initialData }: UploadCardProps) {
                 </Paper>
               )}
 
-              {catalogFieldsVisible && form.game && (
-                <>
-                  <TextField
-                    label={form.game === "RIFTBOUND" ? "Card Name" : "Card Title"}
-                    name="title"
-                    value={form.title}
-                    onChange={handleChange}
-                    fullWidth
-                    required
-                    sx={{ mb: 2 }}
-                  />
-
-                  <TextField
-                    label="Set Name"
-                    name="setName"
-                    value={form.setName}
-                    onChange={handleChange}
-                    fullWidth
-                    helperText="(Optional)"
-                    sx={{ mb: 2 }}
-                  />
-
-                  {form.game === "POKEMON" ? (
-                    <TextField
-                      select
-                      label="Rarity"
-                      name="rarity"
-                      value={form.rarity}
-                      onChange={handleChange}
-                      fullWidth
-                      sx={{ mb: 2 }}
-                      helperText="(Optional)"
-                      slotProps={{
-                        select: {
-                          MenuProps: { PaperProps: { sx: { maxHeight: 250, overflowY: "auto" } } },
-                        },
-                      }}
-                    >
-                      <MenuItem value="">None</MenuItem>
-                      {POKEMON_RARITIES.map((r) => (
-                        <MenuItem key={r} value={r}>{r}</MenuItem>
-                      ))}
-                    </TextField>
-                  ) : (
-                    <TextField
-                      label="Rarity"
-                      name="rarity"
-                      value={form.rarity}
-                      onChange={handleChange}
-                      fullWidth
-                      helperText="(Optional)"
-                      sx={{ mb: 2 }}
-                    />
-                  )}
-
-                  <TextField
-                    label="Card Number"
-                    name="cardNumber"
-                    value={form.cardNumber}
-                    onChange={handleChange}
-                    fullWidth
-                    helperText="(Optional)"
-                    sx={{ mb: 2 }}
-                  />
-
-                  {form.game === "POKEMON" && (
-                    <TextField
-                      select
-                      label="Language"
-                      name="language"
-                      value={form.language}
-                      onChange={handleChange}
-                      fullWidth
-                      required
-                      sx={{ mb: 2 }}
-                    >
-                      {POKEMON_LANGUAGES.map((g) => (
-                        <MenuItem key={g} value={g}>{g}</MenuItem>
-                      ))}
-                    </TextField>
-                  )}
-
-                  {form.game === "RIFTBOUND" && (
-                    <>
-                      <TextField
-                        select
-                        label="Type"
-                        name="type"
-                        value={form.type}
-                        onChange={(e) => handleTypeChange(e.target.value)}
-                        fullWidth
-                        required
-                        sx={{ mb: 2 }}
-                      >
-                        {RIFTBOUND_TYPES.map((t) => (
-                          <MenuItem key={t} value={t}>{t}</MenuItem>
-                        ))}
-                      </TextField>
-
-                      {form.type && !supertypeIsFixed && (
-                        <TextField
-                          select
-                          label="Supertype"
-                          name="supertype"
-                          value={form.supertype}
-                          onChange={handleChange}
-                          fullWidth
-                          sx={{ mb: 2 }}
-                        >
-                          {supertypeOptions.map((s) => (
-                            <MenuItem key={s || "none"} value={s}>{s || "None"}</MenuItem>
-                          ))}
-                        </TextField>
-                      )}
-                    </>
-                  )}
-
-                  <Divider sx={{ my: 2 }} />
-                </>
+              {!isEditMode && catalogLookup.status === "not_found" && (
+                <Typography variant="body2" color="error" sx={{ mb: 2 }}>
+                  This TCG Player ID is not in the catalog. Run pnpm update-catalog
+                  to import new cards, then try again.
+                </Typography>
               )}
+
+              <Divider sx={{ my: 2 }} />
 
               <TextField
                 label="Price (SGD)"

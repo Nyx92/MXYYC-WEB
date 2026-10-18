@@ -9,24 +9,24 @@ import { NextRequest } from "next/server";
  * client-supplied so an admin can pick any user from a dropdown). Because
  * ownerId is trusted input, this route must be restricted to admins only.
  *
- * The route now creates a Listing pointed at a PokemonCardCatalog row
- * (found-or-created by tcgPlayerId) instead of storing identity fields
- * directly on the card row.
+ * The listing points at an existing catalog row, found by tcgPlayerId. The
+ * route never creates or edits catalog rows — the catalog is filled only by
+ * `pnpm update-catalog`.
  *
  * Tests cover:
  *   - 401 unauthenticated
  *   - 403 authenticated but not an admin
  *   - 201 admin can still create a card (happy path, proves the auth gate
- *     doesn't break the legitimate flow), reusing an existing catalog row
- *   - creates a new catalog row when no existing one matches
+ *     doesn't break the legitimate flow), linking an existing catalog row
+ *   - 400 when the tcgPlayerId is not in the catalog
  */
 
 // ── STEP 1: Create the mock objects ──────────────────────────────────────────
 
 const mockPrisma = vi.hoisted(() => ({
   listing: { create: vi.fn() },
-  pokemonCardCatalog: { upsert: vi.fn() },
-  riftboundCardCatalog: { upsert: vi.fn() },
+  pokemonCardCatalog: { findUnique: vi.fn() },
+  riftboundCardCatalog: { findUnique: vi.fn() },
   user: { findUnique: vi.fn() },
 }));
 
@@ -64,11 +64,9 @@ import { POST } from "@/app/api/cards/route";
 function buildFormData(overrides: Record<string, string> = {}) {
   const fd = new FormData();
   fd.set("game", "POKEMON");
-  fd.set("title", "Charizard");
   fd.set("condition", "NM");
   fd.set("ownerId", "target-user-1");
   fd.set("tcgPlayerId", "tcg-1");
-  fd.set("language", "English");
   fd.set("forSale", "true");
   fd.set("price", "50.00");
   fd.append("images", new File(["fake"], "card.png", { type: "image/png" }));
@@ -79,15 +77,9 @@ function buildFormData(overrides: Record<string, string> = {}) {
 function buildRiftboundFormData(overrides: Record<string, string> = {}) {
   const fd = new FormData();
   fd.set("game", "RIFTBOUND");
-  fd.set("title", "Vi - Peacekeeper");
   fd.set("condition", "NM");
   fd.set("ownerId", "target-user-1");
   fd.set("tcgPlayerId", "rift-tcg-1");
-  fd.set("setName", "Unleashed");
-  fd.set("rarity", "Rare");
-  fd.set("cardNumber", "176");
-  fd.set("type", "Unit");
-  fd.set("supertype", "Champion");
   fd.set("forSale", "true");
   fd.set("price", "50.00");
   fd.append("images", new File(["fake"], "card.png", { type: "image/png" }));
@@ -111,6 +103,8 @@ beforeEach(() => {
   // before creating a listing (see route.ts). Individual tests can
   // override with mockResolvedValue(null) to exercise the 400 path.
   mockPrisma.user.findUnique.mockResolvedValue({ id: "owner-1" });
+  mockPrisma.pokemonCardCatalog.findUnique.mockResolvedValue({ id: "catalog-1" });
+  mockPrisma.riftboundCardCatalog.findUnique.mockResolvedValue({ id: "rbc-1" });
 });
 
 describe("POST /api/cards", () => {
@@ -143,9 +137,8 @@ describe("POST /api/cards", () => {
     expect(mockPrisma.listing.create).not.toHaveBeenCalled();
   });
 
-  it("lets an admin create a card owned by a different user, reusing an existing catalog row", async () => {
+  it("lets an admin create a card owned by a different user, linking the existing catalog row", async () => {
     mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    mockPrisma.pokemonCardCatalog.upsert.mockResolvedValue({ id: "catalog-1", tcgPlayerId: "tcg-1" });
     mockPrisma.listing.create.mockResolvedValue({
       id: "listing-1",
       ownerId: "target-user-1",
@@ -163,8 +156,8 @@ describe("POST /api/cards", () => {
     const res = await POST(postRequest(buildFormData()));
     expect(res.status).toBe(200);
 
-    expect(mockPrisma.pokemonCardCatalog.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { tcgPlayerId: "tcg-1" }, update: {} })
+    expect(mockPrisma.pokemonCardCatalog.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tcgPlayerId: "tcg-1" } })
     );
 
     // The admin's own id must NOT silently override the chosen ownerId —
@@ -186,37 +179,19 @@ describe("POST /api/cards", () => {
     expect(body.card.title).toBe("Charizard");
   });
 
-  it("creates a new catalog row when no existing one matches the submitted tcgPlayerId", async () => {
+  it("returns 400 and uploads nothing when the tcgPlayerId is not in the catalog", async () => {
     mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    mockPrisma.pokemonCardCatalog.upsert.mockResolvedValue({ id: "catalog-new" });
-    mockPrisma.listing.create.mockResolvedValue({
-      id: "listing-1",
-      ownerId: "target-user-1",
-      pokemonCard: {
-        nameEn: "Charizard",
-        rarity: "Rare Holo",
-        setNameEn: "Base Set",
-        language: "English",
-        localId: "004",
-        tcgPlayerId: "tcg-1",
-      },
-      riftboundCard: null,
-    });
+    mockPrisma.pokemonCardCatalog.findUnique.mockResolvedValue(null);
 
     const res = await POST(postRequest(buildFormData()));
-    expect(res.status).toBe(200);
-
-    expect(mockPrisma.pokemonCardCatalog.upsert).toHaveBeenCalled();
-    expect(mockPrisma.listing.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ pokemonCardId: "catalog-new" }),
-      })
-    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/not in the catalog/);
+    expect(mockSupabaseInstance.storage.from).not.toHaveBeenCalled();
+    expect(mockPrisma.listing.create).not.toHaveBeenCalled();
   });
 
-  it("creates a RIFTBOUND listing, reusing an existing catalog row matched by tcgPlayerId", async () => {
+  it("creates a RIFTBOUND listing, linking the catalog row matched by tcgPlayerId", async () => {
     mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    mockPrisma.riftboundCardCatalog.upsert.mockResolvedValue({ id: "rbc-1", tcgPlayerId: "rift-tcg-1" });
     mockPrisma.listing.create.mockResolvedValue({
       id: "listing-2",
       ownerId: "target-user-1",
@@ -235,10 +210,10 @@ describe("POST /api/cards", () => {
     const res = await POST(postRequest(buildRiftboundFormData()));
     expect(res.status).toBe(200);
 
-    expect(mockPrisma.riftboundCardCatalog.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { tcgPlayerId: "rift-tcg-1" }, update: {} })
+    expect(mockPrisma.riftboundCardCatalog.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { tcgPlayerId: "rift-tcg-1" } })
     );
-    expect(mockPrisma.pokemonCardCatalog.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.pokemonCardCatalog.findUnique).not.toHaveBeenCalled();
 
     expect(mockPrisma.listing.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -252,50 +227,6 @@ describe("POST /api/cards", () => {
 
     const body = await res.json();
     expect(body.card.title).toBe("Vi - Peacekeeper");
-  });
-
-  it("creates a new RIFTBOUND catalog row when no existing one matches the submitted tcgPlayerId", async () => {
-    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    mockPrisma.riftboundCardCatalog.upsert.mockResolvedValue({ id: "rbc-new" });
-    mockPrisma.listing.create.mockResolvedValue({
-      id: "listing-2",
-      ownerId: "target-user-1",
-      pokemonCard: null,
-      riftboundCard: {
-        name: "Vi - Peacekeeper",
-        rarity: "Rare",
-        setLabel: "Unleashed",
-        collectorNumber: "176",
-        tcgPlayerId: "rift-tcg-1",
-        type: "Unit",
-        supertype: "Champion",
-      },
-    });
-
-    const res = await POST(postRequest(buildRiftboundFormData()));
-    expect(res.status).toBe(200);
-
-    expect(mockPrisma.riftboundCardCatalog.upsert).toHaveBeenCalled();
-    expect(mockPrisma.listing.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ riftboundCardId: "rbc-new" }),
-      })
-    );
-  });
-
-  it("returns 400 for an unknown RIFTBOUND type", async () => {
-    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    const res = await POST(postRequest(buildRiftboundFormData({ type: "Trap" })));
-    expect(res.status).toBe(400);
-    expect(mockPrisma.listing.create).not.toHaveBeenCalled();
-  });
-
-  it("returns 400 when the supertype doesn't belong to the given RIFTBOUND type", async () => {
-    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
-    // Champion only belongs to Unit/Legend, not Gear.
-    const res = await POST(postRequest(buildRiftboundFormData({ type: "Gear", supertype: "Champion" })));
-    expect(res.status).toBe(400);
-    expect(mockPrisma.listing.create).not.toHaveBeenCalled();
   });
 
   it("returns 400 for an unrecognized game value", async () => {

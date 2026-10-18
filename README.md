@@ -133,7 +133,7 @@ Seed data is defined in `prisma/seed.ts`.
 pnpm seed
 ```
 
-The seed's mock listings are attached to **real** Pokémon catalog cards (looked up by `externalId`, see `POKEMON_SEED_CARDS` in `prisma/seed.ts`), so the card catalog must be imported first (see "Card catalog" below). On a database without the catalog, the seed stops with a clear error before it deletes anything. `pnpm reset-db` keeps the catalog tables, so it is not affected.
+The seed's mock listings are attached to **real** Pokémon and Riftbound catalog cards (looked up by id, see `POKEMON_SEED_CARDS` and `riftboundVi` in `prisma/seed.ts`), so run `pnpm update-catalog` first (see "Card catalog" below). On a database without the catalog, the seed stops with a clear error before it deletes anything. The seed never writes to the catalog or to `PriceHistory`.
 
 ### To reset the db when there's updates to schema
 
@@ -141,7 +141,22 @@ The seed's mock listings are attached to **real** Pokémon catalog cards (looked
 pnpm reset-db
 ```
 
-This runs `script/reset-db.sh`: it pushes `schema.prisma` and reseeds mock data, but never drops the protected `PokemonCardCatalog`, `RiftboundCardCatalog` and `PriceHistory` tables (never use `db push --force-reset` — it wipes them).
+This runs `script/reset-db.sh`: it pushes `schema.prisma`, re-applies the `PriceHistory` delete block, and reseeds mock data. It never drops the protected `PokemonCardCatalog`, `RiftboundCardCatalog` and `PriceHistory` tables (never use `db push --force-reset` — it wipes them).
+
+### Protected data
+
+| Table | Written only by | Protection |
+|---|---|---|
+| `PokemonCardCatalog`, `RiftboundCardCatalog` | `pnpm update-catalog` (and the pricing crons, which only set their price timestamps) | The seed, reset-db and the admin upload never create, edit or delete catalog rows. A catalog card that has price history or listings cannot be deleted (`onDelete: Restrict`). |
+| `PriceHistory` | the pricing crons | A database trigger blocks every `DELETE` and `TRUNCATE` ([`prisma/sql/protect-price-history.sql`](prisma/sql/protect-price-history.sql)). |
+
+Prisma does not manage triggers. On a new database (for example staging), apply the block once after the first `db push`:
+
+```bash
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/protect-price-history.sql
+```
+
+The trigger does not stop `DROP TABLE` (for example `prisma db push --force-reset`). Take a backup before every schema push. To delete price rows on purpose, see the instructions at the top of the SQL file.
 
 ---
 
@@ -152,6 +167,10 @@ card (not only listed ones). They are filled from a separate, manual CLI
 project, **tcg-index-sync** (`/home/buba/projects/tcg-index-sync`), which
 builds the card lists and fills in missing TCGPlayer ids. Full guide:
 [`tcg-index-sync/README.md`](../tcg-index-sync/README.md).
+
+Admins add listings on `/upload` with a TCG Player ID. The card must already be
+in the catalog. If it is not, run `pnpm update-catalog` first. Editing a listing
+changes only the listing (price, condition, images, owner), never the card.
 
 #### Update the catalog (one command)
 

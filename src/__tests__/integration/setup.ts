@@ -41,7 +41,12 @@ async function truncateAll() {
       SELECT tablename FROM pg_tables WHERE schemaname = 'public'`;
     tables = rows.map((r) => `"public"."${r.tablename}"`).join(", ");
   }
-  await prisma.$executeRawUnsafe(`TRUNCATE ${tables} CASCADE`);
+  // PriceHistory blocks TRUNCATE (prisma/sql/protect-price-history.sql);
+  // lift the block for this one transaction only.
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(`SET LOCAL mxyyc.allow_price_history_delete = 'on'`),
+    prisma.$executeRawUnsafe(`TRUNCATE ${tables} CASCADE`),
+  ]);
 }
 
 beforeEach(async () => {

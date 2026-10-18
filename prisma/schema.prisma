@@ -323,9 +323,10 @@ model PriceHistory {
   id   String @id @default(uuid())
   game String // "POKEMON" | "RIFTBOUND"
 
-  pokemonCard     PokemonCardCatalog?   @relation(fields: [pokemonCardId], references: [id], onDelete: Cascade)
+  // Restrict: deleting a catalog card must never delete its price history.
+  pokemonCard     PokemonCardCatalog?   @relation(fields: [pokemonCardId], references: [id], onDelete: Restrict)
   pokemonCardId   String?
-  riftboundCard   RiftboundCardCatalog? @relation(fields: [riftboundCardId], references: [id], onDelete: Cascade)
+  riftboundCard   RiftboundCardCatalog? @relation(fields: [riftboundCardId], references: [id], onDelete: Restrict)
   riftboundCardId String?
 
   variant    String // "RAW" | "PSA 10" | "CGC 9.5" | ... — see toPriceVariantLabel()

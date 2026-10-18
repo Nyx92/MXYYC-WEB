@@ -7,10 +7,7 @@ import { dollarsToCents } from "@/lib/money";
 import {
   listingCatalogInclude,
   withListingDisplay,
-  findOrCreatePokemonCatalogEntry,
-  findOrCreateRiftboundCatalogEntry,
 } from "@/lib/listingDisplay";
-import { isValidRiftboundType, isValidRiftboundSupertype } from "@/lib/riftboundCatalog";
 import { compressCardImage } from "@/lib/imageProcessing";
 import { getListingsPage } from "@/lib/listingsQuery";
 
@@ -87,35 +84,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const title = formData.get("title") as string | null;
     const condition = formData.get("condition") as string | null;
     const description = (formData.get("description") as string | null) || "";
     const ownerId = formData.get("ownerId") as string | null;
-    const setName = (formData.get("setName") as string | null) || "";
-    const rarity = (formData.get("rarity") as string | null) || "";
     const forSale = formData.get("forSale") === "true";
-    const tcgPlayerId = formData.get("tcgPlayerId") as string | null;
-    // Pokemon-only — Riftbound catalog rows have no language field.
-    const language = formData.get("language") as string | null;
-    const cardNumber = (formData.get("cardNumber") as string | null) || "";
-    // Riftbound-only.
-    const type = formData.get("type") as string | null;
-    const supertype = (formData.get("supertype") as string | null) ?? "";
-
-    if (game === "RIFTBOUND") {
-      if (!type || !isValidRiftboundType(type)) {
-        return NextResponse.json(
-          { error: `Unknown Riftbound type: "${type}"` },
-          { status: 400 }
-        );
-      }
-      if (!isValidRiftboundSupertype(type, supertype)) {
-        return NextResponse.json(
-          { error: `Supertype "${supertype}" is not valid for type "${type}"` },
-          { status: 400 }
-        );
-      }
-    }
+    const tcgPlayerId = (formData.get("tcgPlayerId") as string | null)?.trim() || null;
 
     // Price logic (may be omitted when NOT for sale)
     const priceRaw = formData.get("price");
@@ -142,16 +115,13 @@ export async function POST(req: Request) {
       .filter((v): v is File => v instanceof File);
 
     if (
-      !title ||
       !condition ||
       !ownerId ||
       !tcgPlayerId ||
-      (game === "POKEMON" && !language) ||
       images.length === 0 ||
       priceRequiredButMissing
     ) {
       console.error("❌ Missing required fields", {
-        title,
         condition,
         ownerId,
         forSale,
@@ -176,6 +146,20 @@ export async function POST(req: Request) {
     if (!ownerExists) {
       return NextResponse.json(
         { error: "The selected owner does not exist." },
+        { status: 400 }
+      );
+    }
+
+    // The catalog is filled only by `pnpm update-catalog` (tcg-index-sync),
+    // so a listing must point at a card that is already there. Checked
+    // before any image is uploaded.
+    const catalogCard =
+      game === "POKEMON"
+        ? await prisma.pokemonCardCatalog.findUnique({ where: { tcgPlayerId }, select: { id: true } })
+        : await prisma.riftboundCardCatalog.findUnique({ where: { tcgPlayerId }, select: { id: true } });
+    if (!catalogCard) {
+      return NextResponse.json(
+        { error: "This TCG Player ID is not in the catalog. Run pnpm update-catalog to import new cards." },
         { status: 400 }
       );
     }
@@ -238,40 +222,10 @@ export async function POST(req: Request) {
       imageUrls.push(publicUrlData.publicUrl);
     }
 
-    // The admin upload form only collects flat card-identity fields — it
-    // doesn't know about the PokemonCardCatalog/RiftboundCardCatalog tables.
-    // Reuse a catalog row for repeated uploads of "the same" card (matched by
-    // tcgPlayerId), or create one, instead of creating an orphaned
-    // catalog-less listing.
     const listingData =
       game === "POKEMON"
-        ? {
-            game: "POKEMON" as const,
-            pokemonCardId: (
-              await findOrCreatePokemonCatalogEntry(prisma, {
-                title,
-                setName,
-                rarity,
-                tcgPlayerId,
-                language: language as string,
-                cardNumber,
-              })
-            ).id,
-          }
-        : {
-            game: "RIFTBOUND" as const,
-            riftboundCardId: (
-              await findOrCreateRiftboundCatalogEntry(prisma, {
-                title,
-                setName,
-                rarity,
-                tcgPlayerId,
-                cardNumber,
-                type: type as string,
-                supertype,
-              })
-            ).id,
-          };
+        ? { game: "POKEMON" as const, pokemonCardId: catalogCard.id }
+        : { game: "RIFTBOUND" as const, riftboundCardId: catalogCard.id };
 
     const listing = await prisma.listing.create({
       data: {

@@ -5,94 +5,10 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import path from "path";
 import { dollarsToCents } from "@/lib/money";
-import { pickTcgPlayerIdOwners } from "@/lib/riftboundCatalog";
 import { uploadImageFromUrl, riftboundImageCachePath } from "@/lib/seedImages";
 import { compressCardImage, toWebpStoragePath } from "@/lib/imageProcessing";
-import riftboundCardsIndex from "./riftbound_cards_index.json";
 
 const prisma = new PrismaClient();
-
-// Shape of each value in riftbound_cards_index.json's "index" map.
-interface RiftboundIndexEntry {
-  riftbound_id: string;
-  name: string;
-  set_id: string;
-  set_label: string;
-  collector_number: number;
-  type: string;
-  supertype: string | null;
-  rarity: string;
-  domain: string[];
-  energy: number | null;
-  might: number | null;
-  power: number | null;
-  artist: string | null;
-  image_url: string;
-  tags: string[];
-  alternate_art: boolean;
-  signature: boolean;
-  overnumbered: boolean;
-  text_plain: string | null;
-  text_flavour: string | null;
-  // Not present on every card (~1208/1304) — cards not yet listed on
-  // TCGPlayer have no SKU. A small number of entries share one
-  // tcgplayer_id — not real physical variants, but a stale duplicate row
-  // for the same card (see pickTcgPlayerIdOwners).
-  tcgplayer_id: string | null;
-  updated_on: string;
-}
-
-// Real catalog data pulled from riftcodex.com (see the file's generated_at).
-// supertype maps null -> "" since RiftboundCardCatalog.supertype is a
-// required column (see src/lib/riftboundCatalog.ts's "" = "no supertype"
-// convention). collector_number is numeric in the index; the column is
-// String to allow future overnumbered-variant suffixes.
-//
-// skipDuplicates, since RiftboundCardCatalog is never cleared above — a row
-// already present (a previous seed run, or one that survived a db-push-only
-// reset) is left untouched rather than erroring on its riftboundId/
-// tcgPlayerId unique constraints.
-async function seedRiftboundCatalog() {
-  const entries = Object.values(riftboundCardsIndex.index) as RiftboundIndexEntry[];
-
-  const tcgPlayerIdOwners = pickTcgPlayerIdOwners(
-    entries.map((c) => ({ tcgPlayerId: c.tcgplayer_id, updatedOn: c.updated_on }))
-  );
-
-  const { count } = await prisma.riftboundCardCatalog.createMany({
-    skipDuplicates: true,
-    data: entries.map((c, i) => ({
-      riftboundId: c.riftbound_id,
-      name: c.name,
-      type: c.type,
-      supertype: c.supertype ?? "",
-      rarity: c.rarity,
-      domain: c.domain,
-      energy: c.energy,
-      might: c.might,
-      power: c.power,
-      artist: c.artist,
-      imageUrl: c.image_url,
-      tags: c.tags,
-      alternateArt: c.alternate_art,
-      signature: c.signature,
-      overnumbered: c.overnumbered,
-      textPlain: c.text_plain,
-      textFlavour: c.text_flavour,
-      setId: c.set_id,
-      setLabel: c.set_label,
-      collectorNumber: String(c.collector_number),
-      // Only the most recently updated row in a shared-tcgplayer_id group
-      // keeps it, so a tcgPlayerId-based catalog lookup resolves to exactly
-      // one row — the other row(s) still get seeded, just without the id.
-      tcgPlayerId: tcgPlayerIdOwners.has(i) ? c.tcgplayer_id : null,
-    })),
-  });
-  console.log(
-    `✅ Seeded ${count} new Riftbound catalog entries from riftbound_cards_index.json ` +
-      `(${entries.length - count} already present, left untouched)`
-  );
-}
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
@@ -174,6 +90,11 @@ async function main() {
         `See README "Card catalog".`
     );
   }
+  // Riftbound card for the Riftbound mock listing below — same rule.
+  const riftboundVi = await prisma.riftboundCardCatalog.findUnique({ where: { riftboundId: "unl-176-219" } });
+  if (!riftboundVi) {
+    throw new Error('The Riftbound card catalog must be imported before seeding (missing: unl-176-219). See README "Card catalog".');
+  }
   const pokemonCatalog = Object.fromEntries(
     Object.entries(POKEMON_SEED_CARDS).map(([key, externalId]) => [key, seedCardByExternalId.get(externalId)!])
   ) as Record<keyof typeof POKEMON_SEED_CARDS, (typeof seedCards)[number]>;
@@ -194,15 +115,10 @@ async function main() {
   // CollectionRequest references User with onDelete: Restrict (pickup history
   // is never removed as a side effect), so clear it before users.
   await prisma.collectionRequest.deleteMany();
-  // PokemonCardCatalog and RiftboundCardCatalog are deliberately NEVER
-  // cleared here — unlike everything else in this function, they can hold
-  // real imported data (card images, JustTCG price-backfill progress) that
-  // takes real time/API budget to rebuild. upsertPokemonCard() and
-  // seedRiftboundCatalog() below upsert/skip-duplicate instead of
-  // create()/createMany(), so re-running this script is still safe with
-  // those tables left untouched. script/reset-db.sh protects the same two
-  // tables (plus PriceHistory) the same way — see prisma/schema.prisma's
-  // db-push step there, which never drops a table that isn't changing.
+  // PokemonCardCatalog, RiftboundCardCatalog and PriceHistory are never
+  // touched here: the catalogs are filled only by `pnpm update-catalog`, and
+  // price history only by the pricing crons. script/reset-db.sh guards the
+  // same three tables.
   // User references Account/Session (if you have these tables populated in dev)
   await prisma.session.deleteMany();
   await prisma.account.deleteMany();
@@ -1046,17 +962,8 @@ async function main() {
 
   console.log("✅ Seeded extra transactions for Highest Transacted");
 
-  await seedRiftboundCatalog();
-
-  // ── Riftbound catalog + listing ──────────────────────────────────────────
-  // "Vi - Peacekeeper" (unl-176-219, tcgPlayerId already set by the bulk
-  // catalog import above) already exists — reuse that row instead of
-  // creating a duplicate, which would violate the riftboundId unique
-  // constraint.
-  const riftboundVi = await prisma.riftboundCardCatalog.findUniqueOrThrow({
-    where: { riftboundId: "unl-176-219" },
-  });
-
+  // ── Riftbound listing ──────────────────────────────────────────────────
+  // "Vi - Peacekeeper" (riftboundVi, looked up before the cleanup above).
   // riftboundVi.imageUrl is the raw riftcodex CDN URL — next.config.mjs's
   // remotePatterns only allowlists the Supabase storage host, so using it
   // directly as-is would break next/image on /cards/[id]. Re-host it first.

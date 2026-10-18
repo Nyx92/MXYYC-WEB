@@ -194,16 +194,15 @@ describe("PUT /api/cards/[id] — admin update with shared guard", () => {
     expect(mockPrisma.listing.update).not.toHaveBeenCalled();
   });
 
-  it("updates the linked catalog row in place for a POKEMON listing and returns resolved display fields", async () => {
+  it("updates only the listing and never the shared catalog row, even if identity fields are sent", async () => {
     mockPrisma.listing.findUnique.mockResolvedValue({
       ...LISTING, game: "POKEMON", pokemonCardId: "pkc-1", riftboundCardId: null,
     });
-    mockPrisma.pokemonCardCatalog.update.mockResolvedValue({ id: "pkc-1" });
     mockPrisma.listing.update.mockResolvedValue({
       ...LISTING,
       price: 10000,
       pokemonCard: {
-        nameEn: "Charizard Holo", rarity: "Mint", setNameEn: "Base Set",
+        nameEn: "Charizard", rarity: "Rare Holo", setNameEn: "Base Set",
         language: "English", localId: "004", tcgPlayerId: "base1-4",
       },
       riftboundCard: null,
@@ -211,63 +210,12 @@ describe("PUT /api/cards/[id] — admin update with shared guard", () => {
 
     const res = await PUT(
       putRequest({
-        title: "Charizard Holo",
+        // An old client may still send these — they must be ignored.
+        title: "Renamed",
+        setName: "Other Set",
+        tcgPlayerId: "other-id",
         condition: "Mint",
         ownerId: "owner-1",
-        setName: "Base Set",
-        rarity: "Mint",
-        tcgPlayerId: "base1-4",
-        language: "English",
-        cardNumber: "004",
-        forSale: "true",
-        price: "100",
-        keepImageUrls: JSON.stringify(["https://example.com/old.png"]),
-      }),
-      { params: Promise.resolve({ id: "card-1" }) }
-    );
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(mockPrisma.pokemonCardCatalog.update).toHaveBeenCalledWith({
-      where: { id: "pkc-1" },
-      data: {
-        nameEn: "Charizard Holo",
-        setNameEn: "Base Set",
-        rarity: "Mint",
-        language: "English",
-        localId: "004",
-        tcgPlayerId: "base1-4",
-      },
-    });
-    expect(body.card.title).toBe("Charizard Holo");
-  });
-
-  it("updates the linked catalog row in place for a RIFTBOUND listing and returns resolved display fields", async () => {
-    mockPrisma.listing.findUnique.mockResolvedValue({
-      ...LISTING, game: "RIFTBOUND", pokemonCardId: null, riftboundCardId: "rbc-1",
-    });
-    mockPrisma.riftboundCardCatalog.update.mockResolvedValue({ id: "rbc-1" });
-    mockPrisma.listing.update.mockResolvedValue({
-      ...LISTING,
-      price: 10000,
-      pokemonCard: null,
-      riftboundCard: {
-        name: "Vi - Peacekeeper", rarity: "Rare", setLabel: "Unleashed",
-        collectorNumber: "176", tcgPlayerId: "rift-tcg-1", type: "Unit", supertype: "Champion",
-      },
-    });
-
-    const res = await PUT(
-      putRequest({
-        title: "Vi - Peacekeeper",
-        condition: "NM",
-        ownerId: "owner-1",
-        setName: "Unleashed",
-        rarity: "Rare",
-        tcgPlayerId: "rift-tcg-1",
-        cardNumber: "176",
-        type: "Unit",
-        supertype: "Champion",
         forSale: "true",
         price: "100",
         keepImageUrls: JSON.stringify(["https://example.com/old.png"]),
@@ -278,47 +226,11 @@ describe("PUT /api/cards/[id] — admin update with shared guard", () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.pokemonCardCatalog.update).not.toHaveBeenCalled();
-    expect(mockPrisma.riftboundCardCatalog.update).toHaveBeenCalledWith({
-      where: { id: "rbc-1" },
-      data: {
-        name: "Vi - Peacekeeper",
-        setLabel: "Unleashed",
-        rarity: "Rare",
-        collectorNumber: "176",
-        type: "Unit",
-        supertype: "Champion",
-        tcgPlayerId: "rift-tcg-1",
-      },
-    });
-    expect(body.card.title).toBe("Vi - Peacekeeper");
-  });
-
-  it("returns 400 when the RIFTBOUND supertype doesn't belong to the given type", async () => {
-    mockPrisma.listing.findUnique.mockResolvedValue({
-      ...LISTING, game: "RIFTBOUND", pokemonCardId: null, riftboundCardId: "rbc-1",
-    });
-
-    const res = await PUT(
-      putRequest({
-        title: "Vi - Peacekeeper",
-        condition: "NM",
-        ownerId: "owner-1",
-        setName: "Unleashed",
-        rarity: "Rare",
-        tcgPlayerId: "rift-tcg-1",
-        cardNumber: "176",
-        type: "Gear",
-        supertype: "Champion",
-        forSale: "true",
-        price: "100",
-        keepImageUrls: JSON.stringify(["https://example.com/old.png"]),
-      }),
-      { params: Promise.resolve({ id: "card-1" }) }
-    );
-
-    expect(res.status).toBe(400);
     expect(mockPrisma.riftboundCardCatalog.update).not.toHaveBeenCalled();
-    expect(mockPrisma.listing.update).not.toHaveBeenCalled();
+    const data = mockPrisma.listing.update.mock.calls[0][0].data;
+    expect(data).toMatchObject({ condition: "Mint", price: 10000, ownerId: "owner-1" });
+    expect(data).not.toHaveProperty("pokemonCardId");
+    expect(body.card.title).toBe("Charizard");
   });
 
   it("returns 400 when the submitted ownerId doesn't match any user", async () => {
