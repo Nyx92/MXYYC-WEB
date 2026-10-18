@@ -217,9 +217,10 @@ async function refreshPrices(): Promise<NextResponse> {
             priceCents: usdToSgdCents(market.price),
           });
         }
-        results.rawRefreshed++;
       }
       await writePricesInBulk(writes, capturedAt);
+      // Counted only once the write landed — a failed write lands in `failed`.
+      results.rawRefreshed += batch.length;
     } catch (err) {
       results.failed += batch.length;
       const msg = err instanceof Error ? err.message : String(err);

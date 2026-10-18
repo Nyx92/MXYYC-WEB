@@ -60,6 +60,10 @@ beforeEach(() => {
   // interactive transaction — run the callback against the same mock so
   // every existing collectionRequest/listing assertion still applies.
   mockPrisma.$transaction.mockImplementation((cb: (tx: typeof mockPrisma) => Promise<unknown>) => cb(mockPrisma));
+  // Conditional attach matches every submitted listing by default.
+  mockPrisma.listing.updateMany.mockImplementation(
+    async (args: { where: { id: { in: string[] } } }) => ({ count: args.where.id.in.length })
+  );
 });
 
 describe("POST /api/collection-requests", () => {
@@ -91,7 +95,7 @@ describe("POST /api/collection-requests", () => {
     const res = await POST(postRequest({ listingIds: ["l1", "l1"] }));
     expect(res.status).toBe(200);
     expect(mockPrisma.listing.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["l1"] } },
+      where: { id: { in: ["l1"] }, ownerId: "user-1", forSale: false, inAuction: false, collectionRequestId: null, collectedAt: null },
       data: { collectionRequestId: "req-1" },
     });
   });
@@ -114,6 +118,14 @@ describe("POST /api/collection-requests", () => {
     expect((await res.json()).error).toMatch(matcher);
   });
 
+  it("returns 409 when a card stopped being eligible between the read and the attach (race)", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([makeListing("l1"), makeListing("l2")]);
+    mockPrisma.listing.updateMany.mockResolvedValueOnce({ count: 1 });
+    const res = await POST(postRequest({ listingIds: ["l1", "l2"] }));
+    expect(res.status).toBe(409);
+    expect(mockPostCollectionRequest).not.toHaveBeenCalled();
+  });
+
   it("returns 409 when a card has a pending offer", async () => {
     mockPrisma.listing.findMany.mockResolvedValue([makeListing("l1")]);
     mockPrisma.offer.findFirst.mockResolvedValue({ id: "offer-1" });
@@ -132,7 +144,7 @@ describe("POST /api/collection-requests", () => {
       expect.objectContaining({ data: expect.objectContaining({ userId: "user-1" }) })
     );
     expect(mockPrisma.listing.updateMany).toHaveBeenCalledWith({
-      where: { id: { in: ["l1", "l2"] } },
+      where: { id: { in: ["l1", "l2"] }, ownerId: "user-1", forSale: false, inAuction: false, collectionRequestId: null, collectedAt: null },
       data: { collectionRequestId: "req-1" },
     });
     expect(mockPostCollectionRequest).toHaveBeenCalledWith(
@@ -161,7 +173,7 @@ describe("POST /api/collection-requests", () => {
     const res = await POST(postRequest({ listingIds: ["l3"] }));
     expect(res.status).toBe(200);
     expect(mockPrisma.collectionRequest.create).not.toHaveBeenCalled();
-    expect(mockPrisma.collectionRequest.update).toHaveBeenNthCalledWith(1, { where: { id: "existing-req" }, data: {} });
+    expect(mockPrisma.collectionRequest.update).toHaveBeenNthCalledWith(1, { where: { id: "existing-req", status: "REQUESTED" }, data: {} });
     // Topping up reports the just-added count, worded as an addition, not
     // the request's full size — see postCollectionRequest's isTopUp param.
     expect(mockPostCollectionRequest).toHaveBeenCalledWith(
@@ -176,9 +188,33 @@ describe("POST /api/collection-requests", () => {
     await POST(postRequest({ listingIds: ["l4"] }));
 
     expect(mockPrisma.collectionRequest.update).toHaveBeenNthCalledWith(1, {
-      where: { id: "packed-req" },
-      data: { status: "REQUESTED", packedAt: null },
+      where: { id: "packed-req", status: "PACKED" },
+      // The old pickup code is cleared too — it was issued for the packed set.
+      data: {
+        status: "REQUESTED",
+        packedAt: null,
+        pickupCodeHash: null,
+        pickupCodeExpiresAt: null,
+        pickupCodeAttempts: 0,
+      },
     });
     expect(mockPostCollectionRequest).toHaveBeenCalledWith(expect.objectContaining({ isTopUp: true }));
+  });
+
+  it("returns 409 instead of reopening a request whose status changed concurrently (e.g. just collected)", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([makeListing("l6")]);
+    mockPrisma.collectionRequest.findFirst.mockResolvedValue({ id: "packed-req", status: "PACKED", requestRef: "PU-2608-ZZZZ" });
+    mockPrisma.collectionRequest.update.mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "P2025" }));
+    const res = await POST(postRequest({ listingIds: ["l6"] }));
+    expect(res.status).toBe(409);
+  });
+
+  it("still returns 200 when storing the Discord message id fails after the request was created", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([makeListing("l5")]);
+    // The transaction's create succeeds; only the post-commit update fails.
+    mockPrisma.collectionRequest.update.mockRejectedValueOnce(new Error("db blip"));
+
+    const res = await POST(postRequest({ listingIds: ["l5"] }));
+    expect(res.status).toBe(200);
   });
 });

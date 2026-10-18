@@ -13,7 +13,9 @@ import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay"
  *   ?type=sold      — orders where the user is the SELLER (they sold something)
  *
  * Each order includes the card details (title, image, condition) and
- * the other party's username/email so both tabs can render correctly.
+ * the other party's username so both tabs can render correctly (never their
+ * email — this includes abandoned PENDING/EXPIRED checkouts, and the shop
+ * handles pickup, so counterparties never need each other's contact details).
  *
  * Steps:
  *   1. Auth check — only logged-in users can see their orders.
@@ -59,8 +61,8 @@ export async function GET(req: NextRequest) {
         // Include the other party depending on tab:
         // - purchases: we want to know who sold it to us (seller)
         // - sold: we want to know who bought it from us (buyer)
-        seller: { select: { id: true, username: true, email: true } },
-        buyer:  { select: { id: true, username: true, email: true } },
+        seller: { select: { id: true, username: true } },
+        buyer:  { select: { id: true, username: true } },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -84,12 +86,10 @@ export async function GET(req: NextRequest) {
         seller: {
           id: o.seller.id,
           username: o.seller.username,
-          email: o.seller.email,
         },
         buyer: {
           id: o.buyer.id,
           username: o.buyer.username,
-          email: o.buyer.email,
         },
       };
     });

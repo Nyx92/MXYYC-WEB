@@ -40,6 +40,31 @@ export async function transferCardOwnership(
 }
 
 /**
+ * releaseCheckoutReservation — undoes a checkout's reservation + PENDING
+ * order(s) when stripe.checkout.sessions.create fails. Without it the
+ * listing stays locked for the full hold, and the order stays PENDING
+ * forever: it never got a session id, so no checkout.session.expired event
+ * will ever clean it up. Only touches rows still held by this buyer with no
+ * session stamped, so it can't release anyone else's reservation.
+ */
+export async function releaseCheckoutReservation(
+  buyerId: string,
+  orderIds: string[],
+  listingIds: string[]
+): Promise<void> {
+  await prisma.$transaction([
+    prisma.order.updateMany({
+      where: { id: { in: orderIds }, status: "PENDING", stripeCheckoutSessionId: null },
+      data: { status: "EXPIRED" },
+    }),
+    prisma.listing.updateMany({
+      where: { id: { in: listingIds }, reservedById: buyerId, reservedCheckoutSessionId: null },
+      data: { reservedById: null, reservedUntil: null },
+    }),
+  ]);
+}
+
+/**
  * notifySellerCardSold — fire-and-forget "card sold" notification shared by
  * both webhook handlers. Never throws — a failed lookup/send is swallowed,
  * matching the existing behavior at both call sites (a notification failure

@@ -6,6 +6,10 @@
 // never breaks the collection-request flow in an environment that hasn't
 // configured Discord.
 
+// A hung webhook must not hold up the caller (e.g. a pickup request's
+// response) — every fetch here gives up after this long.
+const DISCORD_TIMEOUT_MS = 5000;
+
 const ADMIN_COLLECTION_URL = `${process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"}/admin/collection-requests`;
 
 async function postToDiscord(payload: object): Promise<string | null> {
@@ -18,6 +22,7 @@ async function postToDiscord(payload: object): Promise<string | null> {
     const res = await fetch(`${url}?wait=true`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
       body: JSON.stringify(payload),
     });
     if (!res.ok) {
@@ -40,6 +45,7 @@ async function editDiscordMessage(messageId: string, payload: object): Promise<v
     const res = await fetch(`${url}/messages/${messageId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
       body: JSON.stringify(payload),
     });
     if (!res.ok) console.error("[discord] edit failed:", messageId, res.status, await res.text());
@@ -49,6 +55,14 @@ async function editDiscordMessage(messageId: string, payload: object): Promise<v
     // going and a bare error here wouldn't say which one.
     console.error("[discord] edit failed:", messageId, err);
   }
+}
+
+// Backslash-escapes Discord markdown so user-controlled text (usernames,
+// browser-reported error messages) renders literally — otherwise e.g. a
+// username of "[Approve refund](https://evil)" becomes a clickable link
+// inside a genuine-looking staff alert.
+export function escapeDiscordMarkdown(text: string): string {
+  return text.replace(/[\\*_~`|>\[\]()#-]/g, "\\$&");
 }
 
 // Posts an alert when a customer requests (or tops up) an in-person pickup.
@@ -70,7 +84,7 @@ export async function postCollectionRequest({
   itemCount: number;
   isTopUp: boolean;
 }): Promise<string | null> {
-  const displayName = customerName ?? customerEmail;
+  const displayName = escapeDiscordMarkdown(customerName ?? customerEmail);
   const action = isTopUp
     ? `added **${itemCount}** more card${itemCount !== 1 ? "s" : ""} to their pickup request`
     : `wants to collect **${itemCount}** card${itemCount !== 1 ? "s" : ""} in person`;
@@ -139,15 +153,22 @@ export async function postErrorAlert({
     const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
       body: JSON.stringify({
         embeds: [
           {
-            title: `🚨 Error — ${runtime}`,
-            description: message.slice(0, 4000),
+            // Browser reports arrive through a public endpoint, so they are
+            // labelled as unverified and every field is escaped (no live
+            // links/formatting in the staff channel).
+            title: runtime === "browser" ? "🚨 Error — browser (unverified report)" : `🚨 Error — ${runtime}`,
+            // Escape first, then cut: escaping can double the length, and
+            // Discord rejects the whole post past 4096 (description) / 1024
+            // (field value) characters.
+            description: escapeDiscordMarkdown(message).slice(0, 4000),
             color: 0xef4444,
             fields: [
-              { name: "Environment", value: environment, inline: true },
-              ...(url ? [{ name: "URL", value: url.slice(0, 1000), inline: true }] : []),
+              { name: "Environment", value: escapeDiscordMarkdown(environment).slice(0, 100), inline: true },
+              ...(url ? [{ name: "URL", value: escapeDiscordMarkdown(url).slice(0, 1000), inline: true }] : []),
             ],
             timestamp: new Date().toISOString(),
           },
@@ -186,6 +207,7 @@ export async function postCronResult({
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(DISCORD_TIMEOUT_MS),
       body: JSON.stringify({
         embeds: [
           {

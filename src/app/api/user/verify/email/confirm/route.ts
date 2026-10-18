@@ -73,8 +73,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Incorrect code" }, { status: 400 });
     }
 
-    await prisma.user.update({
-      where: { id: userId },
+    // Conditional on the hash we just checked still being the stored one:
+    // PUT /api/user clears it when the email changes, so a confirm racing a
+    // email change can't mark the NEW (unproven) value verified.
+    const { count } = await prisma.user.updateMany({
+      where: { id: userId, emailVerificationCodeHash: user.emailVerificationCodeHash },
       data: {
         emailVerified: new Date(),
         emailVerificationCodeHash: null,
@@ -82,6 +85,10 @@ export async function POST(req: NextRequest) {
         emailVerificationAttempts: 0,
       },
     });
+
+    if (count !== 1) {
+      return NextResponse.json({ error: "Your email changed. Request a new code." }, { status: 409 });
+    }
 
     return NextResponse.json({ message: "Email verified." });
   } catch (err) {

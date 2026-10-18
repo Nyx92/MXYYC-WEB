@@ -21,6 +21,7 @@ async function main() {
     console.error("Failed cards:");
     for (const error of errors) console.error(`  ${error}`);
   }
+  if (failed > 0) process.exitCode = 1;
 }
 
 main()

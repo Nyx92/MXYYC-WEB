@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  collectionRequest: { findUnique: vi.fn(), update: vi.fn() },
+  collectionRequest: { findUnique: vi.fn(), updateMany: vi.fn() },
 }));
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 const mockResolveCollectionNotification = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -32,7 +32,7 @@ beforeEach(() => {
   mockPrisma.collectionRequest.findUnique.mockResolvedValue({
     id: "req-1", userId: "user-1", status: "REQUESTED", requestRef: "PU-2609-AAAA", discordMessageIds: ["msg-1"],
   });
-  mockPrisma.collectionRequest.update.mockResolvedValue({ id: "req-1", status: "PACKED" });
+  mockPrisma.collectionRequest.updateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("POST /api/collection-requests/[id]/mark-packed", () => {
@@ -52,22 +52,22 @@ describe("POST /api/collection-requests/[id]/mark-packed", () => {
     mockPrisma.collectionRequest.findUnique.mockResolvedValue(null);
     const res = await POST(postRequest(), params);
     expect(res.status).toBe(404);
-    expect(mockPrisma.collectionRequest.update).not.toHaveBeenCalled();
+    expect(mockPrisma.collectionRequest.updateMany).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the request isn't REQUESTED", async () => {
     mockPrisma.collectionRequest.findUnique.mockResolvedValue({ id: "req-1", status: "PACKED" });
     const res = await POST(postRequest(), params);
     expect(res.status).toBe(409);
-    expect(mockPrisma.collectionRequest.update).not.toHaveBeenCalled();
+    expect(mockPrisma.collectionRequest.updateMany).not.toHaveBeenCalled();
   });
 
   it("marks PACKED, resolves the Discord alert, and notifies the customer", async () => {
     const res = await POST(postRequest(), params);
     expect(res.status).toBe(200);
 
-    expect(mockPrisma.collectionRequest.update).toHaveBeenCalledWith({
-      where: { id: "req-1" },
+    expect(mockPrisma.collectionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "REQUESTED" },
       data: { status: "PACKED", packedAt: expect.any(Date) },
     });
     expect(mockResolveCollectionNotification).toHaveBeenCalledWith(
@@ -84,5 +84,13 @@ describe("POST /api/collection-requests/[id]/mark-packed", () => {
     expect(mockResolveCollectionNotification).toHaveBeenCalledWith(
       expect.objectContaining({ adminName: "staff" })
     );
+  });
+
+  it("returns 409 and skips side effects when a concurrent change beat the update", async () => {
+    mockPrisma.collectionRequest.updateMany.mockResolvedValue({ count: 0 });
+    const res = await POST(postRequest(), params);
+    expect(res.status).toBe(409);
+    expect(mockNotifyAsync).not.toHaveBeenCalled();
+    expect(mockResolveCollectionNotification).not.toHaveBeenCalled();
   });
 });

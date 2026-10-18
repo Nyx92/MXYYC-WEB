@@ -90,7 +90,15 @@ describe("PUT /api/cards/[id] — owner update", () => {
     const res = await PUT(putRequest({ price: "", forSale: "false" }), { params: Promise.resolve({ id: "card-1" }) });
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.listing.update).toHaveBeenCalled();
+    // Unlisting only re-checks ownership + no live Buy Now reservation
+    expect(mockPrisma.listing.update).toHaveBeenCalledWith({
+      where: {
+        id: "card-1",
+        ownerId: "owner-1",
+        AND: [{ OR: [{ reservedUntil: null }, { reservedUntil: { lt: expect.any(Date) } }] }],
+      },
+      data: { price: null, forSale: false },
+    });
   });
 
   it("allows the normal price/forSale update when not in an auction", async () => {
@@ -98,9 +106,38 @@ describe("PUT /api/cards/[id] — owner update", () => {
 
     expect(res.status).toBe(200);
     expect(mockPrisma.listing.update).toHaveBeenCalledWith({
-      where: { id: "card-1" },
+      where: {
+        id: "card-1",
+        ownerId: "owner-1",
+        AND: [{
+          inAuction: false,
+          collectionRequestId: null,
+          OR: [{ reservedUntil: null }, { reservedUntil: { lt: expect.any(Date) } }],
+        }],
+      },
       data: { price: 1500, forSale: true },
     });
+  });
+
+  it("returns 409 when the card changed (sold / auctioned / collected / reserved) between the read and the write (P2025)", async () => {
+    mockPrisma.listing.update.mockRejectedValue(Object.assign(new Error("Record not found"), { code: "P2025" }));
+    const res = await PUT(putRequest({ price: "15", forSale: "true" }), { params: Promise.resolve({ id: "card-1" }) });
+    expect(res.status).toBe(409);
+  });
+
+  it("omits the reservation columns from the success response", async () => {
+    mockPrisma.listing.update.mockResolvedValue({
+      ...LISTING, price: 1500, forSale: true,
+      reservedById: "buyer-9", reservedUntil: new Date(), reservedCheckoutSessionId: "cs_123",
+    });
+    const res = await PUT(putRequest({ price: "15", forSale: "true" }), { params: Promise.resolve({ id: "card-1" }) });
+    const { card } = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(card.price).toBe(15);
+    expect(card).not.toHaveProperty("reservedById");
+    expect(card).not.toHaveProperty("reservedUntil");
+    expect(card).not.toHaveProperty("reservedCheckoutSessionId");
   });
 
   it("returns 400 when forSale is true and price is zero", async () => {
@@ -313,6 +350,39 @@ describe("PUT /api/cards/[id] — admin update with shared guard", () => {
       select: { id: true },
     });
     expect(mockPrisma.pokemonCardCatalog.update).not.toHaveBeenCalled();
+    expect(mockPrisma.listing.update).not.toHaveBeenCalled();
+  });
+
+  const ADMIN_FIELDS = {
+    title: "Charizard Holo",
+    condition: "Mint",
+    ownerId: "owner-1",
+    tcgPlayerId: "base1-4",
+    language: "English",
+    forSale: "true",
+    price: "100",
+    keepImageUrls: JSON.stringify(["https://example.com/old.png"]),
+  };
+
+  it("adds the auction/pickup/reservation locks when reassigning the owner, and 409s on P2025", async () => {
+    mockPrisma.listing.update.mockRejectedValue(Object.assign(new Error("Record not found"), { code: "P2025" }));
+
+    const res = await PUT(putRequest({ ...ADMIN_FIELDS, ownerId: "owner-2" }), { params: Promise.resolve({ id: "card-1" }) });
+
+    expect(res.status).toBe(409);
+    expect(mockPrisma.listing.update.mock.calls[0][0].where).toEqual({
+      id: "card-1",
+      AND: [{
+        inAuction: false,
+        collectionRequestId: null,
+        OR: [{ reservedUntil: null }, { reservedUntil: { lt: expect.any(Date) } }],
+      }],
+    });
+  });
+
+  it("returns 400 (not 500) for malformed keepImageUrls JSON", async () => {
+    const res = await PUT(putRequest({ ...ADMIN_FIELDS, keepImageUrls: "not json" }), { params: Promise.resolve({ id: "card-1" }) });
+    expect(res.status).toBe(400);
     expect(mockPrisma.listing.update).not.toHaveBeenCalled();
   });
 });

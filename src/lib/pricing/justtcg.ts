@@ -247,7 +247,10 @@ export function pickPricedVariants(
     if (variant.type !== "graded" || !variant.grading) continue;
     const company = GRADING_COMPANY_LABELS[variant.grading.company.toUpperCase()];
     if (!company) continue;
-    picks.push({ label: `${company} ${variant.grading.grade}`, variant });
+    const label = `${company} ${variant.grading.grade}`;
+    // First per label wins — one day must never get two rows for one label.
+    if (picks.some((p) => p.label === label)) continue;
+    picks.push({ label, variant });
   }
 
   return picks;

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { expireOffer } from "@/lib/offerExpiry";
+import { expireOffer, recoverStuckAcceptedOffer } from "@/lib/offerExpiry";
 
 /**
  * GET /api/cron/expire-offers  ← called by an external scheduler (cron-job.org)
@@ -59,14 +59,22 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
   // ── 2. Find all pending offers that have passed their expiry time ──────────
   // "pending" = seller hasn't responded yet
   // expiresAt < now = the 24h window has passed
+  //
+  // Also picks up offers stuck in "accepted" — an accept that died mid-way
+  // (see recoverStuckAcceptedOffer). A live accept finishes in seconds, so
+  // 15 minutes without an update means it is not coming back.
   const now = new Date();
+  const stuckBefore = new Date(now.getTime() - 15 * 60 * 1000);
   const expiredOffers = await prisma.offer.findMany({
     where: {
-      status: "pending",
-      expiresAt: { lt: now },
+      OR: [
+        { status: "pending", expiresAt: { lt: now } },
+        { status: "accepted", updatedAt: { lt: stuckBefore } },
+      ],
     },
     select: {
       id: true,
+      status: true,
       paymentIntentId: true,
       buyerId: true,
       listingId: true,
@@ -86,7 +94,8 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
   for (const offer of expiredOffers) {
     try {
       // expireOffer: cancels the PI then marks offer "expired" in DB
-      await expireOffer(offer);
+      if (offer.status === "accepted") await recoverStuckAcceptedOffer(offer);
+      else await expireOffer(offer);
       results.success++;
     } catch (err) {
       results.failed++;

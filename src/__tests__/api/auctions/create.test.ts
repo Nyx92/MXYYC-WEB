@@ -9,14 +9,15 @@ import { NextRequest } from "next/server";
  *   2. Validate inputs (startingBid, durationDays, reservePrice, buyOutPrice)
  *   3. Load listing — must be owned by seller, not already in auction, not
  *      have a pending offer, and not have an active Buy Now reservation
- *   4. Create Auction + lock listing in prisma.$transaction
+ *   4. Interactive prisma.$transaction: conditionally lock the listing
+ *      (listing.updateMany — 0 rows → 409), then create the Auction
  *   5. Return 201 with formatted auction (prices in dollars)
  */
 
 // ── STEP 1: Create the mock objects ──────────────────────────────────────────
 
 const mockPrisma = vi.hoisted(() => ({
-  listing: { findUnique: vi.fn(), update: vi.fn() },
+  listing: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   auction: { create: vi.fn() },
   offer:   { findFirst: vi.fn() },
   $transaction: vi.fn(),
@@ -85,6 +86,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.CRON_SECRET = "secret";
   mockPrisma.offer.findFirst.mockResolvedValue(null); // default: no pending offer
+  // Interactive transaction: the callback receives mockPrisma as its tx client.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => fn(mockPrisma));
+  mockPrisma.listing.updateMany.mockResolvedValue({ count: 1 }); // default: lock succeeds
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -147,6 +151,19 @@ describe("POST /api/auctions", () => {
     expect(body.error).toMatch(/duration/i);
   });
 
+  it("rejects 6 days — the max is 5 so a bid's ~7-day Stripe hold outlives auction + decision window", async () => {
+    mockGetServerSession.mockResolvedValue(SELLER_SESSION);
+    const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 6 }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Duration must be between 1 and 5 days");
+  });
+
+  it("returns 400 when durationDays is below 1", async () => {
+    mockGetServerSession.mockResolvedValue(SELLER_SESSION);
+    const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 0 }));
+    expect(res.status).toBe(400);
+  });
+
   it("returns 400 when reservePrice < startingBid", async () => {
     mockGetServerSession.mockResolvedValue(SELLER_SESSION);
     const res = await POST(postReq({
@@ -183,7 +200,7 @@ describe("POST /api/auctions", () => {
     mockGetServerSession.mockResolvedValue(SELLER_SESSION);
     mockPrisma.listing.findUnique.mockResolvedValue(LISTING);
     const dbAuction = makeDbAuction({ startingBid: 5000, buyOutPrice: 5000 });
-    mockPrisma.$transaction.mockResolvedValue([dbAuction]);
+    mockPrisma.auction.create.mockResolvedValue(dbAuction);
     const res = await POST(postReq({
       cardId: "card-1", startingBid: 50, buyOutPrice: 50, durationDays: 3,
     }));
@@ -264,17 +281,31 @@ describe("POST /api/auctions", () => {
       reservedUntil: new Date(Date.now() - 10 * 60_000),
     });
     const dbAuction = makeDbAuction({ startingBid: 500 });
-    mockPrisma.$transaction.mockResolvedValue([dbAuction]);
+    mockPrisma.auction.create.mockResolvedValue(dbAuction);
 
     const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 3 }));
     expect(res.status).toBe(201);
+  });
+
+  it("accepts the 5-day maximum and ends the auction 5 days out", async () => {
+    mockGetServerSession.mockResolvedValue(SELLER_SESSION);
+    mockPrisma.listing.findUnique.mockResolvedValue(LISTING);
+    mockPrisma.auction.create.mockResolvedValue(makeDbAuction({ startingBid: 500 }));
+
+    const before = Date.now();
+    const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 5 }));
+    expect(res.status).toBe(201);
+    const endsAt: Date = mockPrisma.auction.create.mock.calls.at(-1)![0].data.endsAt;
+    const fiveDays = 5 * 24 * 60 * 60 * 1000;
+    expect(endsAt.getTime()).toBeGreaterThanOrEqual(before + fiveDays);
+    expect(endsAt.getTime()).toBeLessThanOrEqual(Date.now() + fiveDays);
   });
 
   it("creates auction and returns 201 with prices in dollars and cardId (not listingId)", async () => {
     mockGetServerSession.mockResolvedValue(SELLER_SESSION);
     mockPrisma.listing.findUnique.mockResolvedValue(LISTING);
     const dbAuction = makeDbAuction({ startingBid: 500 }); // 500 cents = S$5.00
-    mockPrisma.$transaction.mockResolvedValue([dbAuction]);
+    mockPrisma.auction.create.mockResolvedValue(dbAuction);
 
     const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 3 }));
     expect(res.status).toBe(201);
@@ -302,7 +333,7 @@ describe("POST /api/auctions", () => {
       reservePrice: 1000,
       buyOutPrice:  2000,
     });
-    mockPrisma.$transaction.mockResolvedValue([dbAuction]);
+    mockPrisma.auction.create.mockResolvedValue(dbAuction);
 
     const res = await POST(postReq({
       cardId: "card-1", startingBid: 5, reservePrice: 10, buyOutPrice: 20, durationDays: 3,
@@ -313,5 +344,26 @@ describe("POST /api/auctions", () => {
     expect(body.auction.startingBid).toBe(5);
     expect(body.auction.reservePrice).toBe(10);
     expect(body.auction.buyOutPrice).toBe(20);
+  });
+
+  it("returns 409 when the conditional listing lock matches 0 rows", async () => {
+    mockGetServerSession.mockResolvedValue(SELLER_SESSION);
+    mockPrisma.listing.findUnique.mockResolvedValue(LISTING);
+    // A concurrent create / collection request / checkout won the race.
+    mockPrisma.listing.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await POST(postReq({ cardId: "card-1", startingBid: 5, durationDays: 3 }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toMatch(/no longer available/i);
+
+    expect(mockPrisma.listing.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "card-1", ownerId: "seller-1", inAuction: false, collectionRequestId: null,
+        }),
+      })
+    );
+    expect(mockPrisma.auction.create).not.toHaveBeenCalled();
   });
 });

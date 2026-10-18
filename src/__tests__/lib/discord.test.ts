@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { postCronResult, postErrorAlert } from "@/lib/discord";
+import { postCronResult, postErrorAlert, escapeDiscordMarkdown } from "@/lib/discord";
 
 /**
  * postCronResult posts a Discord alert for the two price-sync cron jobs, on
@@ -33,7 +33,8 @@ describe("postCronResult", () => {
 
     expect(mockFetch).toHaveBeenCalledWith(
       "https://discord.com/api/webhooks/test",
-      expect.objectContaining({ method: "POST" })
+      // signal: bounded by a timeout so a hung webhook can't stall the caller.
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) })
     );
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.embeds[0].title).toBe("✅ refresh-prices");
@@ -116,13 +117,31 @@ describe("postErrorAlert", () => {
       expect.objectContaining({ method: "POST" })
     );
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.embeds[0].title).toBe("🚨 Error — browser");
+    expect(body.embeds[0].title).toBe("🚨 Error — browser (unverified report)");
     expect(body.embeds[0].description).toBe("TypeError: x is not a function");
     expect(body.embeds[0].color).toBe(0xef4444);
     expect(body.embeds[0].fields).toEqual([
       { name: "Environment", value: "production", inline: true },
       { name: "URL", value: "https://mxyyc.example/checkout", inline: true },
     ]);
+  });
+
+  it("escapes markdown so a reported message can't render as a live link", async () => {
+    vi.stubEnv("DISCORD_ALERTS_WEBHOOK_URL", "https://discord.com/api/webhooks/test");
+    await postErrorAlert({
+      message: "[Session expired, re-auth here](https://evil.example)",
+      runtime: "browser",
+      environment: "production",
+    });
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.embeds[0].description).toBe("\\[Session expired, re\\-auth here\\]\\(https://evil.example\\)");
+  });
+
+  it("keeps the description within Discord's limit even when escaping doubles the length", async () => {
+    vi.stubEnv("DISCORD_ALERTS_WEBHOOK_URL", "https://discord.com/api/webhooks/test");
+    await postErrorAlert({ message: "(".repeat(3000), runtime: "browser", environment: "production" });
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.embeds[0].description.length).toBeLessThanOrEqual(4000);
   });
 
   it("omits the URL field when no url is given", async () => {
@@ -139,5 +158,14 @@ describe("postErrorAlert", () => {
     await expect(
       postErrorAlert({ message: "boom", runtime: "server", environment: "production" })
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("escapeDiscordMarkdown", () => {
+  it("neutralises link/formatting syntax in a user-chosen username", () => {
+    expect(escapeDiscordMarkdown("[Approve refund](https://evil)")).toBe(
+      "\\[Approve refund\\]\\(https://evil\\)"
+    );
+    expect(escapeDiscordMarkdown("**bold** _x_")).toBe("\\*\\*bold\\*\\* \\_x\\_");
   });
 });

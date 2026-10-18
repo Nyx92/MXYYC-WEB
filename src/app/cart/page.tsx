@@ -12,7 +12,7 @@
 //   DELETE /api/cart/[id] → removes a single item
 //   DELETE /api/cart      → clears the whole cart
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
@@ -323,6 +323,29 @@ export default function CartPage() {
     [cartData]
   );
 
+  // In-flight selection PATCHes. POST /api/checkout/cart charges whatever the
+  // server has marked selected, so handleCheckout awaits these first —
+  // otherwise a quick toggle-then-checkout could charge the old selection.
+  const pendingPatches = useRef(new Set<Promise<unknown>>());
+
+  const patchSelected = useCallback((itemId: string, selected: boolean) => {
+    const p = fetch(`/api/cart/${itemId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selected }),
+    }).then((res) => {
+      if (!res.ok) throw new Error(`PATCH ${res.status}`);
+    });
+    pendingPatches.current.add(p);
+    p.catch(() => {
+      // The optimistic checkbox state no longer matches the server — say so
+      // and reload the cart so what's shown is what checkout will charge.
+      setCheckoutError("Couldn't update your selection. Please review your cart and try again.");
+      void loadCart();
+    }).finally(() => pendingPatches.current.delete(p));
+    return p;
+  }, [loadCart]);
+
   const allSelected = allItems.length > 0 && allItems.every((i) => i.selected);
   const someSelected = allItems.some((i) => i.selected);
 
@@ -341,14 +364,10 @@ export default function CartPage() {
         };
       });
       for (const item of allItems) {
-        fetch(`/api/cart/${item.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selected: checked }),
-        }).catch(() => {});
+        patchSelected(item.id, checked).catch(() => {});
       }
     },
-    [allItems]
+    [allItems, patchSelected]
   );
 
   // ── Toggle single item ─────────────────────────────────────────────────────
@@ -366,12 +385,8 @@ export default function CartPage() {
         })),
       };
     });
-    await fetch(`/api/cart/${itemId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selected }),
-    });
-  }, []);
+    await patchSelected(itemId, selected).catch(() => {});
+  }, [patchSelected]);
 
   // ── Remove single item ─────────────────────────────────────────────────────
 
@@ -396,6 +411,12 @@ export default function CartPage() {
     setCheckoutError(null);
     setCheckoutNeedsVerification(false);
     setCheckoutLoading(true);
+    const patches = await Promise.allSettled([...pendingPatches.current]);
+    if (patches.some((p) => p.status === "rejected")) {
+      // patchSelected already surfaced the error and is reloading the cart.
+      setCheckoutLoading(false);
+      return;
+    }
     try {
       const res = await fetch("/api/checkout/cart", { method: "POST" });
       const data = await res.json();
@@ -415,8 +436,10 @@ export default function CartPage() {
 
   const handleClearCart = useCallback(async () => {
     setCartData((prev) => (prev ? { ...prev, packages: [] } : prev));
+    // Refresh only after the DELETE lands — otherwise the count is re-read
+    // from a cart that still has every item in it.
+    await fetch("/api/cart", { method: "DELETE" }).catch(() => {});
     refreshCount();
-    await fetch("/api/cart", { method: "DELETE" });
   }, [refreshCount]);
 
   // ── Summary (all items, not just selected) ─────────────────────────────────

@@ -40,11 +40,10 @@ beforeEach(() => {
 });
 
 describe("GET /api/cards — filters", () => {
-  it("applies no filter (AND array empty) when no query params are given", async () => {
+  it("always restricts to for-sale listings, even with no query params (private collections stay private)", async () => {
     await GET(cardsRequest(""));
-    expect(mockPrisma.listing.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: {} })
-    );
+    const call = mockPrisma.listing.findMany.mock.calls[0][0];
+    expect(call.where).toEqual({ AND: [{ forSale: true }] });
   });
 
   it("keeps the existing forSale=true behavior", async () => {
@@ -57,7 +56,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?tcgPlayerId=tcg-1"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{
+      AND: [{ forSale: true }, {
         OR: [
           { pokemonCard: { tcgPlayerId: "tcg-1" } },
           { riftboundCard: { tcgPlayerId: "tcg-1" } },
@@ -69,20 +68,20 @@ describe("GET /api/cards — filters", () => {
   it("filters by game", async () => {
     await GET(cardsRequest("?game=RIFTBOUND"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
-    expect(call.where).toEqual({ AND: [{ game: "RIFTBOUND" }] });
+    expect(call.where).toEqual({ AND: [{ forSale: true }, { game: "RIFTBOUND" }] });
   });
 
   it("ignores an unrecognized game value rather than erroring", async () => {
     await GET(cardsRequest("?game=MAGIC"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
-    expect(call.where).toEqual({});
+    expect(call.where).toEqual({ AND: [{ forSale: true }] });
   });
 
   it("filters by one or more setName values, OR'd across both games' set fields", async () => {
     await GET(cardsRequest("?setName=Base+Set&setName=Jungle"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{
+      AND: [{ forSale: true }, {
         OR: [
           { pokemonCard: { setNameEn: { in: ["Base Set", "Jungle"] } } },
           { riftboundCard: { setLabel: { in: ["Base Set", "Jungle"] } } },
@@ -95,7 +94,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?rarity=Rare&rarity=Rare+Holo"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{
+      AND: [{ forSale: true }, {
         OR: [
           { pokemonCard: { rarity: { in: ["Rare", "Rare Holo"] } } },
           { riftboundCard: { rarity: { in: ["Rare", "Rare Holo"] } } },
@@ -108,7 +107,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?type=Unit&type=Legend"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{ riftboundCard: { type: { in: ["Unit", "Legend"] } } }],
+      AND: [{ forSale: true }, { riftboundCard: { type: { in: ["Unit", "Legend"] } } }],
     });
   });
 
@@ -116,7 +115,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?condition=Near+Mint&condition=PSA+10"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{ condition: { in: ["Near Mint", "PSA 10"] } }],
+      AND: [{ forSale: true }, { condition: { in: ["Near Mint", "PSA 10"] } }],
     });
   });
 
@@ -124,7 +123,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?language=English&language=Japanese"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{
+      AND: [{ forSale: true }, {
         OR: [
           { pokemonCard: { language: { in: ["English", "Japanese"] } } },
           { game: "RIFTBOUND" },
@@ -137,7 +136,7 @@ describe("GET /api/cards — filters", () => {
     await GET(cardsRequest("?language=Japanese"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [{
+      AND: [{ forSale: true }, {
         OR: [{ pokemonCard: { language: { in: ["Japanese"] } } }],
       }],
     });
@@ -146,7 +145,7 @@ describe("GET /api/cards — filters", () => {
   it("filters by a list of ids", async () => {
     await GET(cardsRequest("?ids=id-1&ids=id-2"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
-    expect(call.where).toEqual({ AND: [{ id: { in: ["id-1", "id-2"] } }] });
+    expect(call.where).toEqual({ AND: [{ forSale: true }, { id: { in: ["id-1", "id-2"] } }] });
   });
 
   it("combines multiple facets with AND", async () => {
@@ -262,7 +261,7 @@ describe("GET /api/cards — combined game + language filter (regression)", () =
     await GET(cardsRequest("?game=RIFTBOUND&language=English"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [
+      AND: [{ forSale: true }, 
         { game: "RIFTBOUND" },
         {
           OR: [
@@ -278,7 +277,7 @@ describe("GET /api/cards — combined game + language filter (regression)", () =
     await GET(cardsRequest("?game=RIFTBOUND&language=Japanese"));
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({
-      AND: [
+      AND: [{ forSale: true }, 
         { game: "RIFTBOUND" },
         { OR: [{ pokemonCard: { language: { in: ["Japanese"] } } }] },
       ],

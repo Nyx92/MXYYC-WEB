@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { listingLockableWhere } from "@/lib/collectionRequests";
+import { MAX_AUCTION_DAYS } from "@/constants/auctions";
 import { dollarsToCents } from "@/lib/money";
 import {
   formatAuction,
@@ -108,7 +110,7 @@ export async function GET(req: NextRequest) {
  * 1. Auth check — must be logged in.
  * 2. Validate inputs:
  *    - startingBid required and > 0
- *    - durationDays must be 1–6
+ *    - durationDays must be 1–MAX_AUCTION_DAYS (5)
  *    - buyOutPrice > reservePrice if both supplied
  * 3. Load the card — must be owned by the seller and not already in auction.
  *    3b. Guard: card must not have a pending offer.
@@ -156,9 +158,9 @@ export async function POST(req: NextRequest) {
     }
 
     const days = Number(durationDays);
-    if (!durationDays || Number.isNaN(days) || days < 1 || days > 6) {
+    if (!durationDays || Number.isNaN(days) || days < 1 || days > MAX_AUCTION_DAYS) {
       return NextResponse.json(
-        { error: "Duration must be between 1 and 6 days" },
+        { error: `Duration must be between 1 and ${MAX_AUCTION_DAYS} days` },
         { status: 400 }
       );
     }
@@ -268,25 +270,42 @@ export async function POST(req: NextRequest) {
     // ── 4 & 5. Create auction + lock card (atomic) ───────────────────────────
     const endsAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 
-    const [auction] = await prisma.$transaction([
-      prisma.auction.create({
-        data: {
-          listingId: cardId,
-          sellerId,
-          startingBid:  startingBidCents,
-          reservePrice: reservePriceCents,
-          buyOutPrice:  buyOutPriceCents,
-          endsAt,
-          status: "active",
-        },
-        include: AUCTION_INCLUDE,
-      }),
-      // Prevent Buy Now / offers while auction is live.
-      prisma.listing.update({
-        where: { id: cardId },
-        data:  { inAuction: true, forSale: false },
-      }),
-    ]);
+    // The checks above are plain reads; the conditional lock below re-checks
+    // them under the row lock so two concurrent creates (or a create racing
+    // a collection request / checkout) can't both win. No unique index backs
+    // "one live auction per listing", so this updateMany is the enforcement.
+    let auction;
+    try {
+      auction = await prisma.$transaction(async (tx) => {
+        // Prevent Buy Now / offers while auction is live.
+        const lock = await tx.listing.updateMany({
+          where: { id: cardId, ownerId: sellerId, ...listingLockableWhere() },
+          data: { inAuction: true, forSale: false },
+        });
+        if (lock.count !== 1) throw new Error("LISTING_UNAVAILABLE");
+
+        return tx.auction.create({
+          data: {
+            listingId: cardId,
+            sellerId,
+            startingBid:  startingBidCents,
+            reservePrice: reservePriceCents,
+            buyOutPrice:  buyOutPriceCents,
+            endsAt,
+            status: "active",
+          },
+          include: AUCTION_INCLUDE,
+        });
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message === "LISTING_UNAVAILABLE") {
+        return NextResponse.json(
+          { error: "This card is no longer available for auction" },
+          { status: 409 }
+        );
+      }
+      throw err;
+    }
 
     console.log(`[auctions POST] Auction created: ${auction.id} for card ${cardId}`);
 

@@ -134,7 +134,7 @@ export default function SellerOffersDialog({
             {offer.price != null ? `S$${offer.price.toFixed(2)}` : "—"}
           </Typography>
           <Typography sx={{ fontSize: 12, color: "#6b7280" }}>
-            {offer.buyer.username ?? offer.buyer.email} &middot;{" "}
+            {offer.buyer.username ?? "Buyer"} &middot;{" "}
             {new Date(offer.createdAt).toLocaleDateString()}
           </Typography>
           {offer.status === "pending" && offer.expiresAt && (

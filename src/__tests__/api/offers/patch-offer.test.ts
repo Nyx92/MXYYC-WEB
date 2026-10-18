@@ -37,13 +37,13 @@ const mockStripeInstance = vi.hoisted(() => ({
 const mockTx = vi.hoisted(() => ({
   order: { create: vi.fn() },
   offer: { update: vi.fn(), updateMany: vi.fn() },
-  listing: { update: vi.fn() },
+  listing: { updateMany: vi.fn() },
   cardTransaction: { create: vi.fn() },
 }));
 
 const mockPrisma = vi.hoisted(() => ({
   listing: { findUnique: vi.fn() }, // used by the Buy Now reservation guard (step 3)
-  offer: { findUnique: vi.fn(), update: vi.fn() },
+  offer: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   $transaction: vi.fn(),
 }));
 
@@ -79,6 +79,7 @@ const PENDING_OFFER = {
   id: "offer-1",
   status: "pending",
   buyerId: "buyer-1",
+  sellerId: "seller-1",
   paymentIntentId: "pi_123",
   price: 5000, // S$50.00 in cents
   expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h from now (not expired)
@@ -103,6 +104,7 @@ describe("PATCH /api/offers/[id] — accept", () => {
     vi.clearAllMocks();
     mockGetServerSession.mockResolvedValue({ user: { id: "seller-1" } });
     mockPrisma.offer.findUnique.mockResolvedValue(PENDING_OFFER);
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 }); // pending → accepted claim
     mockPrisma.listing.findUnique.mockResolvedValue({ reservedById: null, reservedUntil: null, inAuction: false });
     mockStripeInstance.paymentIntents.capture.mockResolvedValue({
       id: "pi_123",
@@ -114,7 +116,7 @@ describe("PATCH /api/offers/[id] — accept", () => {
       mockTx.order.create.mockResolvedValue(MOCK_ORDER);
       mockTx.offer.update.mockResolvedValue({});
       mockTx.offer.updateMany.mockResolvedValue({ count: 1 });
-      mockTx.listing.update.mockResolvedValue({});
+      mockTx.listing.updateMany.mockResolvedValue({ count: 1 });
       mockTx.cardTransaction.create.mockResolvedValue({});
       return fn(mockTx);
     });
@@ -159,14 +161,14 @@ describe("PATCH /api/offers/[id] — accept", () => {
     expect(mockTx.offer.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { listingId: "card-1", archivedAt: null },
-        data: { archivedAt: expect.any(Date) },
+        data: { archivedAt: expect.any(Date), expiresAt: expect.any(Date) },
       })
     );
 
     // 5. Card ownership transferred: buyer becomes the new owner, card unlisted
-    expect(mockTx.listing.update).toHaveBeenCalledWith(
+    expect(mockTx.listing.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "card-1" },
+        where: expect.objectContaining({ id: "card-1", ownerId: "seller-1", inAuction: false, collectionRequestId: null }),
         data: expect.objectContaining({
           ownerId: "buyer-1",
           forSale: false,
@@ -198,6 +200,34 @@ describe("PATCH /api/offers/[id] — accept", () => {
   });
 
   // ── Refund safety net ─────────────────────────────────────────────────────
+
+  it("returns 409 without capturing when a concurrent accept already claimed the offer", async () => {
+    mockPrisma.offer.updateMany.mockResolvedValueOnce({ count: 0 });
+    const res = await PATCH(patchRequest({ action: "accept" }), { params: Promise.resolve({ id: "offer-1" }) });
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.paymentIntents.capture).not.toHaveBeenCalled();
+  });
+
+  it("refunds and returns 409 when the card was transferred by a concurrent sale", async () => {
+    mockPrisma.$transaction.mockImplementationOnce(async (fn) => {
+      mockTx.listing.updateMany.mockResolvedValue({ count: 0 });
+      return fn(mockTx);
+    });
+    const res = await PATCH(patchRequest({ action: "accept" }), { params: Promise.resolve({ id: "offer-1" }) });
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.refunds.create).toHaveBeenCalledWith({ payment_intent: "pi_123" });
+    expect(mockTx.order.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the current owner is not the seller the offer was made to", async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: "auction-winner" } });
+    mockPrisma.offer.findUnique.mockResolvedValue({
+      ...PENDING_OFFER, listing: { ...PENDING_OFFER.listing, ownerId: "auction-winner" },
+    });
+    const res = await PATCH(patchRequest({ action: "accept" }), { params: Promise.resolve({ id: "offer-1" }) });
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.capture).not.toHaveBeenCalled();
+  });
 
   it("refunds the buyer if the DB transaction fails after PI capture", async () => {
     mockPrisma.$transaction.mockRejectedValue(new Error("DB exploded"));
@@ -337,7 +367,7 @@ describe("PATCH /api/offers/[id] — reject", () => {
     mockGetServerSession.mockResolvedValue({ user: { id: "seller-1" } });
     mockPrisma.offer.findUnique.mockResolvedValue(PENDING_OFFER);
     mockStripeInstance.paymentIntents.cancel.mockResolvedValue({});
-    mockPrisma.offer.update.mockResolvedValue({ ...PENDING_OFFER, status: "rejected" });
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
   });
 
   it("cancels the PI and marks the offer rejected", async () => {
@@ -349,10 +379,22 @@ describe("PATCH /api/offers/[id] — reject", () => {
 
     expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_123");
 
-    expect(mockPrisma.offer.update).toHaveBeenCalledWith({
-      where: { id: "offer-1" },
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-1", status: "pending", archivedAt: null, paymentIntentId: "pi_123" },
       data: { status: "rejected" },
     });
+  });
+
+  it("returns 409 and does not cancel the PI when a concurrent accept already claimed the offer", async () => {
+    mockPrisma.offer.updateMany.mockResolvedValueOnce({ count: 0 });
+    const res = await PATCH(patchRequest({ action: "reject" }), { params: Promise.resolve({ id: "offer-1" }) });
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+  });
+
+  it("binds the reject claim to the PI that was read (an amend in between misses → 409)", async () => {
+    await PATCH(patchRequest({ action: "reject" }), { params: Promise.resolve({ id: "offer-1" }) });
+    expect(mockPrisma.offer.updateMany.mock.calls[0][0].where).toMatchObject({ paymentIntentId: "pi_123" });
   });
 
   it("still marks offer rejected even if PI cancel fails (PI may already be cancelled)", async () => {
@@ -361,8 +403,8 @@ describe("PATCH /api/offers/[id] — reject", () => {
     const res = await PATCH(patchRequest({ action: "reject" }), { params: Promise.resolve({ id: "offer-1" }) });
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.offer.update).toHaveBeenCalledWith({
-      where: { id: "offer-1" },
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-1", status: "pending", archivedAt: null, paymentIntentId: "pi_123" },
       data: { status: "rejected" },
     });
   });

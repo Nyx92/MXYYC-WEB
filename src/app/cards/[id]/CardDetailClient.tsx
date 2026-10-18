@@ -41,30 +41,10 @@ export default function CardDetailClient({
   const watchlistBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [card, setCard] = useState<CardItem | null>(initialCard);
-  const [cardErrorType, setCardErrorType] = useState<"not_found" | null>(
-    initialCard === null ? "not_found" : null
-  );
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [watchlisted, setWatchlisted] = useState(initialCard?.watchlistedByUser ?? false);
   const [watchlistCount, setWatchlistCount] = useState(initialCard?.watchlistCount ?? 0);
 
-  // Adopts the server-resolved initialCard whenever id changes — covers both
-  // the first render and a client-side navigation to a sibling /cards/[id]
-  // page. Next.js re-runs the page's server component (and therefore
-  // getCardDetailForViewer) for every such navigation, even though it
-  // reuses this component instance rather than remounting it — so
-  // initialCard is already fresh and correct for the current id by the time
-  // this renders. Done directly during render (React's documented pattern
-  // for "adjusting state when a prop changes") rather than in an effect, so
-  // there's no flash of the previous card before an effect corrects it.
-  const [resolvedForId, setResolvedForId] = useState(id);
-  if (id !== resolvedForId) {
-    setResolvedForId(id);
-    setCard(initialCard);
-    setCardErrorType(initialCard === null ? "not_found" : null);
-    setWatchlisted(initialCard?.watchlistedByUser ?? false);
-    setWatchlistCount(initialCard?.watchlistCount ?? 0);
-  }
   const [editPriceOpen, setEditPriceOpen] = useState(false);
   const [placeOfferOpen, setPlaceOfferOpen] = useState(false);
   const [sellerOffersOpen, setSellerOffersOpen] = useState(false);
@@ -82,6 +62,11 @@ export default function CardDetailClient({
   // handleBuyNow previously only console.error'd, so a blocked buyer saw
   // nothing happen at all when they clicked Buy Now.
   const [checkoutError, setCheckoutError] = useState<{ message: string; needsVerification: boolean } | null>(null);
+  // In-flight guard for Buy Now: the ref blocks a synchronous double click
+  // (state updates aren't visible until the next render), the state drives
+  // BuyBox's disabled button.
+  const buyNowInFlight = useRef(false);
+  const [buyNowPending, setBuyNowPending] = useState(false);
 
   // Fetches the live auction for the current card, if any — the one piece
   // of card-detail data that genuinely isn't part of the server-rendered
@@ -138,7 +123,7 @@ export default function CardDetailClient({
     };
   }, [id, userId, card]);
 
-  if (cardErrorType === "not_found") {
+  if (initialCard === null) {
     return (
       <ErrorState
         variant="not_found"
@@ -213,7 +198,9 @@ export default function CardDetailClient({
   };
 
   const handleBuyNow = async () => {
-    if (!card || !card.price || !userId) return;
+    if (!card || !card.price || !userId || buyNowInFlight.current) return;
+    buyNowInFlight.current = true;
+    setBuyNowPending(true);
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
@@ -235,27 +222,49 @@ export default function CardDetailClient({
         });
         return;
       }
-      if (data.url) window.location.href = data.url;
+      if (data.url) {
+        // Stays disabled while the browser navigates away to Stripe.
+        window.location.href = data.url;
+        return;
+      }
     } catch (err) {
       console.error("Error calling /api/checkout:", err);
       setCheckoutError({ message: "Failed to start checkout. Please try again.", needsVerification: false });
     }
+    buyNowInFlight.current = false;
+    setBuyNowPending(false);
   };
 
   const handleAuctionDecide = async (auctionId: string, action: "accept" | "reject") => {
-    const res = await fetch(`/api/auctions/${auctionId}/decide`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ action }),
-    });
-    if (res.ok) {
-      if (action === "accept") {
-        router.push("/sold");
-      } else {
-        setAuction((a) => a ? { ...a, status: "expired" } : a);
-        setCard((c) => c ? { ...c, inAuction: false } : c);
+    try {
+      const res = await fetch(`/api/auctions/${auctionId}/decide`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        if (action === "accept") {
+          router.push("/sold");
+        } else {
+          setAuction((a) => a ? { ...a, status: "expired" } : a);
+          setCard((c) => c ? { ...c, inAuction: false } : c);
+        }
+        return;
       }
+      const data = await res.json().catch(() => ({}));
+      setCheckoutError({
+        message: data.error || `Failed to ${action === "accept" ? "accept" : "decline"} the bid. Please try again.`,
+        needsVerification: false,
+      });
+    } catch {
+      setCheckoutError({ message: "Network error. Please try again.", needsVerification: false });
     }
+    // The auction may have changed underneath us (e.g. decision window
+    // closed) — refetch so BuyBox reflects its real state.
+    fetch(`/api/auctions?cardId=${encodeURIComponent(id)}`)
+      .then((r) => r.json())
+      .then((data) => { setAuction(data.auction ?? null); })
+      .catch(() => {});
   };
 
   const handleAddToCart = () => {
@@ -565,6 +574,7 @@ export default function CardDetailClient({
               })
             }
             onBuyNow={() => requireLogin(handleBuyNow)}
+            buyNowPending={buyNowPending}
             onAddToCart={!canManageListing ? handleAddToCart : undefined}
             cartStatus={cartStatus}
             // "Start Auction" only offered when no live auction is running and the

@@ -40,6 +40,10 @@ vi.mock("stripe", () => ({ default: vi.fn(() => mockStripeInstance) }));
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
+const mockReleaseCheckoutReservation = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/webhookHelpers", () => ({ releaseCheckoutReservation: mockReleaseCheckoutReservation }));
+const mockRateLimitResponse = vi.hoisted(() => vi.fn((): Response | null => null));
+vi.mock("@/lib/rateLimit", () => ({ rateLimitResponse: mockRateLimitResponse }));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
 
@@ -81,6 +85,14 @@ const MOCK_SESSION = {
 };
 
 describe("POST /api/checkout", () => {
+  it("returns 429 when the per-user checkout rate limit is exceeded", async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: "buyer-1" } });
+    mockRateLimitResponse.mockReturnValueOnce(new Response(null, { status: 429 }));
+    const res = await POST(makeRequest({ cardId: "card-1" }));
+    expect(res.status).toBe(429);
+    expect(mockRateLimitResponse).toHaveBeenCalledWith("checkout:buyer-1", expect.any(Object), expect.any(String));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
 
@@ -176,6 +188,13 @@ describe("POST /api/checkout", () => {
   });
 
   // ── Race condition (card snatched by another buyer) ─────────────────────────
+
+  it("releases the reservation and PENDING order when Stripe session creation fails", async () => {
+    mockStripeInstance.checkout.sessions.create.mockRejectedValueOnce(new Error("Stripe down"));
+    const res = await POST(makeRequest({ cardId: "card-1" }));
+    expect(res.status).toBe(500);
+    expect(mockReleaseCheckoutReservation).toHaveBeenCalledWith("buyer-1", [expect.any(String)], ["card-1"]);
+  });
 
   it("returns 500 when the card was just reserved by another buyer", async () => {
     mockPrisma.$transaction.mockImplementation(async (fnOrOps) => {

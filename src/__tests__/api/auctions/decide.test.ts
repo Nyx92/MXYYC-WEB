@@ -9,15 +9,12 @@ import { NextRequest } from "next/server";
 // ── STEP 1: Create the mock objects ──────────────────────────────────────────
 
 const mockPrisma = vi.hoisted(() => ({
-  auction: { findUnique: vi.fn(), update: vi.fn() },
-  bid: { update: vi.fn() },
-  listing: { update: vi.fn() },
-  $transaction: vi.fn(),
+  auction: { findUnique: vi.fn() },
 }));
 
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 const mockSettleAuction = vi.hoisted(() => vi.fn());
-const mockCancelBidPI = vi.hoisted(() => vi.fn());
+const mockExpireAuction = vi.hoisted(() => vi.fn());
 const mockNotifyAsync = vi.hoisted(() => vi.fn());
 
 // ── STEP 2: Register the fakes ────────────────────────────────────────────────
@@ -28,7 +25,7 @@ vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/notifications", () => ({ notifyAsync: mockNotifyAsync }));
 vi.mock("@/lib/auctionSettlement", () => ({
   settleAuction: mockSettleAuction,
-  cancelBidPI: mockCancelBidPI,
+  expireAuction: mockExpireAuction,
 }));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
@@ -75,11 +72,7 @@ const BASE_AUCTION = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockPrisma.$transaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops));
-  mockPrisma.bid.update.mockResolvedValue({});
-  mockPrisma.auction.update.mockResolvedValue({});
-  mockPrisma.listing.update.mockResolvedValue({});
-  mockCancelBidPI.mockResolvedValue(undefined);
+  mockExpireAuction.mockResolvedValue(true); // default: decline claim succeeds
   mockSettleAuction.mockResolvedValue(undefined);
 });
 
@@ -145,7 +138,6 @@ describe("POST /api/auctions/[id]/decide", () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(mockSettleAuction).toHaveBeenCalledWith("auction-1");
-    expect(mockCancelBidPI).not.toHaveBeenCalled();
   });
 
   it("reject — cancels the winning PI, updates bid/auction/card, and notifies the bidder with the resolved title", async () => {
@@ -157,19 +149,11 @@ describe("POST /api/auctions/[id]/decide", () => {
     const body = await res.json();
     expect(body.success).toBe(true);
 
-    expect(mockCancelBidPI).toHaveBeenCalledWith("pi_1");
-    expect(mockPrisma.bid.update).toHaveBeenCalledWith({
-      where: { id: "bid-1" },
-      data: { status: "cancelled" },
-    });
-    expect(mockPrisma.auction.update).toHaveBeenCalledWith({
-      where: { id: "auction-1" },
-      data: { status: "expired" },
-    });
-    expect(mockPrisma.listing.update).toHaveBeenCalledWith({
-      where: { id: "card-1" },
-      data: { inAuction: false },
-    });
+    // Bid cancel + PI release + auction expire + card release all go through
+    // expireAuction's conditional claim — the route no longer cancels PIs itself.
+    expect(mockExpireAuction).toHaveBeenCalledWith(
+      "auction-1", "card-1", "pending_seller_decision"
+    );
     expect(mockNotifyAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "buyer-1", type: "auction_expired",
@@ -178,5 +162,17 @@ describe("POST /api/auctions/[id]/decide", () => {
       })
     );
     expect(mockSettleAuction).not.toHaveBeenCalled();
+  });
+
+  it("reject — returns 409 and does not notify when the decline claim fails", async () => {
+    mockGetServerSession.mockResolvedValue(SELLER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
+    // A concurrent settlement / cron expiry already moved the auction on.
+    mockExpireAuction.mockResolvedValue(false);
+
+    const res = await POST(postReq({ action: "reject" }), PARAMS);
+    expect(res.status).toBe(409);
+
+    expect(mockNotifyAsync).not.toHaveBeenCalled();
   });
 });

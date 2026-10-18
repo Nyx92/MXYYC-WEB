@@ -8,9 +8,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  collectionRequest: { findUnique: vi.fn(), update: vi.fn() },
+  collectionRequest: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   listing: { updateMany: vi.fn() },
-  $transaction: vi.fn((ops: any[]) => Promise.all(ops)),
+  $transaction: vi.fn(),
 }));
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 const mockCheckRateLimit = vi.hoisted(() => vi.fn().mockReturnValue({ allowed: true }));
@@ -36,7 +36,9 @@ const CODE_HASH = hashVerificationCode(CODE);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockPrisma.$transaction.mockImplementation((ops: any[]) => Promise.all(ops));
+  // Interactive transaction — run the callback against the same mock.
+  mockPrisma.$transaction.mockImplementation((cb: (tx: typeof mockPrisma) => Promise<unknown>) => cb(mockPrisma));
+  mockPrisma.collectionRequest.updateMany.mockResolvedValue({ count: 1 });
   mockCheckRateLimit.mockReturnValue({ allowed: true });
   mockGetServerSession.mockResolvedValue({ user: { id: "user-1" } });
 });
@@ -128,13 +130,34 @@ describe("POST /api/collection-requests/[id]/otp/confirm", () => {
     const res = await POST(postRequest({ code: CODE }), params);
     expect(res.status).toBe(200);
 
-    expect(mockPrisma.collectionRequest.update).toHaveBeenCalledWith({
-      where: { id: "req-1" },
+    expect(mockPrisma.collectionRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: "req-1", status: "PACKED" },
       data: expect.objectContaining({ status: "COLLECTED", collectedAt: expect.any(Date), pickupCodeHash: null }),
     });
     expect(mockPrisma.listing.updateMany).toHaveBeenCalledWith({
-      where: { collectionRequestId: "req-1" },
+      where: { collectionRequestId: "req-1", ownerId: "user-1" },
       data: { collectedAt: expect.any(Date) },
     });
+  });
+
+  it("returns 409 when a top-up reverted the request to REQUESTED, even with a still-valid code", async () => {
+    mockPrisma.collectionRequest.findUnique.mockResolvedValue({
+      id: "req-1", userId: "user-1", status: "REQUESTED",
+      pickupCodeHash: CODE_HASH, pickupCodeExpiresAt: new Date(Date.now() + 60_000), pickupCodeAttempts: 0,
+    });
+    const res = await POST(postRequest({ code: CODE }), params);
+    expect(res.status).toBe(409);
+    expect(mockPrisma.listing.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 without stamping cards when the request stops being PACKED mid-confirm (race)", async () => {
+    mockPrisma.collectionRequest.findUnique.mockResolvedValue({
+      id: "req-1", userId: "user-1", status: "PACKED",
+      pickupCodeHash: CODE_HASH, pickupCodeExpiresAt: new Date(Date.now() + 60_000), pickupCodeAttempts: 0,
+    });
+    mockPrisma.collectionRequest.updateMany.mockResolvedValue({ count: 0 });
+    const res = await POST(postRequest({ code: CODE }), params);
+    expect(res.status).toBe(409);
+    expect(mockPrisma.listing.updateMany).not.toHaveBeenCalled();
   });
 });

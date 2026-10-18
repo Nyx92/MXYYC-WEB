@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  user: { findUnique: vi.fn(), update: vi.fn() },
+  user: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
 }));
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 const mockCheckRateLimit = vi.hoisted(() => vi.fn().mockReturnValue({ allowed: true }));
@@ -32,6 +32,7 @@ const CODE = "482910";
 const CODE_HASH = hashVerificationCode(CODE);
 
 beforeEach(() => {
+  mockPrisma.user.updateMany.mockResolvedValue({ count: 1 });
   vi.clearAllMocks();
   mockCheckRateLimit.mockReturnValue({ allowed: true });
   mockGetServerSession.mockResolvedValue({ user: { id: "user-1" } });
@@ -97,6 +98,17 @@ describe("POST /api/user/verify/email/confirm", () => {
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
   });
 
+  it("returns 409 when the email changed (code cleared) between the check and the write", async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({
+      emailVerificationCodeHash: CODE_HASH,
+      emailVerificationCodeExpiresAt: new Date(Date.now() + 60_000),
+      emailVerificationAttempts: 0,
+    });
+    mockPrisma.user.updateMany.mockResolvedValueOnce({ count: 0 });
+    const res = await POST(postRequest({ code: CODE }));
+    expect(res.status).toBe(409);
+  });
+
   it("verifies the email and clears the code on a correct match", async () => {
     mockPrisma.user.findUnique.mockResolvedValue({
       emailVerificationCodeHash: CODE_HASH,
@@ -105,8 +117,8 @@ describe("POST /api/user/verify/email/confirm", () => {
     });
     const res = await POST(postRequest({ code: CODE }));
     expect(res.status).toBe(200);
-    expect(mockPrisma.user.update).toHaveBeenCalledWith({
-      where: { id: "user-1" },
+    expect(mockPrisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: "user-1", emailVerificationCodeHash: CODE_HASH },
       data: {
         emailVerified: expect.any(Date),
         emailVerificationCodeHash: null,

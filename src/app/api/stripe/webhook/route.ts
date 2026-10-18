@@ -223,6 +223,19 @@ async function issueRefundOnTransferFailure(
     transferErr
   );
 
+  // Step 0: A concurrent delivery of the same event may have already
+  // committed the sale — our transaction then fails on the idempotency key
+  // or a 0-row transfer. Refunding here would leave the buyer with the card
+  // AND their money back, so stop if the session's orders are already PAID.
+  const alreadyPaid = await prisma.order.findFirst({
+    where: { stripeCheckoutSessionId: session.id, status: "PAID" },
+    select: { id: true },
+  });
+  if (alreadyPaid) {
+    console.warn(`[webhook] Session ${session.id} already completed by another delivery — no refund.`);
+    return;
+  }
+
   // Step 1: Verify we have a paymentIntentId to refund against.
   if (!paymentIntentId) {
     console.error(
@@ -368,9 +381,12 @@ async function handleCartSessionCompleted(
         // Once ownership transfers, all pending offers are invalid. We archive
         // (set archivedAt) rather than delete so history is preserved for
         // buyers and admins.
+        // expiresAt = now hands their still-pending holds to the next
+        // expire-offers cron run, instead of keeping losing buyers' funds
+        // held for up to 24h on a card that is already sold.
         await tx.offer.updateMany({
           where: { listingId: order.listingId },
-          data: { archivedAt: new Date() },
+          data: { archivedAt: new Date(), expiresAt: new Date() },
         });
 
         purchasedListingIds.push(order.listingId);
@@ -510,7 +526,8 @@ async function handleSingleSessionCompleted(
       // Step 7: Archive open offers on this listing
       // Once ownership transfers, all pending offers are invalid. Archived (not
       // deleted) so history is preserved.
-      await tx.offer.updateMany({ where: { listingId }, data: { archivedAt: new Date() } });
+      // expiresAt = now: release losing buyers' holds on the next cron run.
+      await tx.offer.updateMany({ where: { listingId }, data: { archivedAt: new Date(), expiresAt: new Date() } });
       console.log("[webhook] 🎉 Single-item transfer successful.");
     });
   } catch (err) {

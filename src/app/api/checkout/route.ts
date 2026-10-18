@@ -6,6 +6,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
 import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
+import { rateLimitResponse } from "@/lib/rateLimit";
+import { releaseCheckoutReservation } from "@/lib/webhookHelpers";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -21,6 +23,18 @@ export async function POST(req: NextRequest) {
 
     if (!buyerId)
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+    // 🔒 Rate limit by user id — shared with POST /api/checkout/cart. Each
+    // call creates a Stripe Checkout Session AND holds the listing(s) for
+    // 15 minutes, so the cap also bounds how many listings one account can
+    // keep locked away from other buyers. In-memory stopgap (see
+    // src/lib/rateLimit.ts).
+    const limited = rateLimitResponse(
+      `checkout:${buyerId}`,
+      { limit: 10, windowMs: 15 * 60 * 1000 },
+      "Too many checkout attempts. Please try again in a few minutes."
+    );
+    if (limited) return limited;
 
     // 🔒 Buyer must have verified both email and phone before committing to
     // any purchase. See src/lib/purchaseVerification.ts.
@@ -128,7 +142,8 @@ export async function POST(req: NextRequest) {
 
     const title = withListingDisplay(listing).title;
 
-    // 3) Create checkout session
+    // 3) Create checkout session — on failure, release the hold and the
+    //    PENDING order created above (see releaseCheckoutReservation).
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
@@ -162,6 +177,9 @@ export async function POST(req: NextRequest) {
       // user's latest PENDING order, redirect back to its still-open
       // session, or create a new one if expired). Deferred as a follow-up;
       // tracked outside this plan.
+    }).catch(async (stripeErr) => {
+      await releaseCheckoutReservation(buyerId, [order.id], [cardId]);
+      throw stripeErr;
     });
 
     // 4) Save session id + tie reservation to this session id

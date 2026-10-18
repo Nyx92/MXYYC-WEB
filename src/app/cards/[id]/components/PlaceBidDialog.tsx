@@ -41,6 +41,7 @@ import {
 } from "@mui/material";
 import GavelIcon from "@mui/icons-material/Gavel";
 import type { AuctionItem } from "@/types/auction";
+import { dollarsToCents, centsToDollars } from "@/lib/money";
 
 const stripePromise = loadStripe(
   process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY as string
@@ -76,9 +77,12 @@ function BidForm({ auction, onClose, onSuccess, open, initialAmount }: BidFormPr
   const stripe   = useStripe();
   const elements = useElements();
 
-  const minBid = auction.currentBid !== null
-    ? auction.currentBid + 0.01
-    : auction.startingBid;
+  // Compared in integer cents — float dollars (0.14 + 0.01 = 0.15000000000000002)
+  // would reject a bid of exactly the displayed minimum.
+  const minBidCents = auction.currentBid !== null
+    ? dollarsToCents(auction.currentBid) + 1
+    : dollarsToCents(auction.startingBid);
+  const minBid = centsToDollars(minBidCents);
   const buyOut = auction.buyOutPrice;
 
   const [amount,   setAmount]   = useState("");
@@ -116,7 +120,7 @@ function BidForm({ auction, onClose, onSuccess, open, initialAmount }: BidFormPr
 
   const handleContinue = () => {
     const parsed = parseFloat(amount);
-    if (!amount || isNaN(parsed) || parsed < minBid) {
+    if (!amount || isNaN(parsed) || dollarsToCents(parsed) < minBidCents) {
       setError(`Bid must be at least S$${minBid.toFixed(2)}.`);
       return;
     }
@@ -135,7 +139,7 @@ function BidForm({ auction, onClose, onSuccess, open, initialAmount }: BidFormPr
       return;
     }
     const parsed = parseFloat(amount);
-    if (!amount || isNaN(parsed) || parsed < minBid) {
+    if (!amount || isNaN(parsed) || dollarsToCents(parsed) < minBidCents) {
       setError(`Bid must be at least S$${minBid.toFixed(2)}.`);
       return;
     }

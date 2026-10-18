@@ -33,6 +33,10 @@ const REQUIRED_VARS = [
   "STRIPE_WEBHOOK_SECRET",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
+  // src/lib/email.ts constructs `new Resend(...)` at module load, which
+  // throws without a key; every cron route rejects requests without CRON_SECRET.
+  "RESEND_API_KEY",
+  "CRON_SECRET",
 ] as const;
 
 type RequiredEnvVar = (typeof REQUIRED_VARS)[number];

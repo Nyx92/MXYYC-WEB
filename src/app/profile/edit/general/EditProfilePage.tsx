@@ -60,6 +60,10 @@ export default function EditProfilePage() {
     address:   user?.address   || "",
     phoneNumber: user?.phoneNumber?.replace(/^\+/, "") || "",
   }));
+  // Only sent (and only shown) when the email is being changed — the API
+  // requires it then. See PUT /api/user.
+  const [currentPassword, setCurrentPassword] = useState("");
+  const emailChanged = form.email !== (user?.email ?? "");
   const [phoneError, setPhoneError] = useState(false);
 
   const handleChange = (field: string, value: string) =>
@@ -81,10 +85,19 @@ export default function EditProfilePage() {
           ...form,
           dob: form.dob ? form.dob.split("T")[0] : null,
           phoneNumber: normalizedPhone,
+          ...(emailChanged ? { currentPassword } : {}),
         }),
       });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "Update failed");
+      if (!res.ok) {
+        // 4xx errors carry a message meant for the user (wrong current
+        // password, email already in use, ...) — show it as-is.
+        if (res.status < 500 && result.error) {
+          setSnackbar({ open: true, message: result.error, severity: "error" });
+          return;
+        }
+        throw new Error(result.error || "Update failed");
+      }
       await update();
       const phoneChanged = normalizedPhone !== (user?.phoneNumber ?? null);
       setSnackbar({
@@ -148,6 +161,23 @@ export default function EditProfilePage() {
                 />
               </Grid>
             ))}
+
+            {emailChanged && (
+              <Grid size={{ xs: 12, sm: 6 }}>
+                <TextField
+                  fullWidth
+                  label="Current Password"
+                  type="password"
+                  autoComplete="current-password"
+                  helperText="Required to change your email. Leave blank if you sign in with Google."
+                  variant="standard"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  sx={FIELD_SX}
+                />
+              </Grid>
+            )}
 
             <Grid size={{ xs: 12, sm: 6 }}>
               <FormControl fullWidth variant="standard">

@@ -32,10 +32,17 @@ export async function POST(_req: Request, props: { params: Promise<{ id: string 
       return NextResponse.json({ error: `Cannot pack a request that is ${request.status}` }, { status: 409 });
     }
 
-    const updated = await prisma.collectionRequest.update({
-      where: { id: request.id },
-      data: { status: "PACKED", packedAt: new Date() },
+    // Conditional on still being REQUESTED — a concurrent top-up or a second
+    // staff click must not be silently overwritten.
+    const packedAt = new Date();
+    const { count } = await prisma.collectionRequest.updateMany({
+      where: { id: request.id, status: "REQUESTED" },
+      data: { status: "PACKED", packedAt },
     });
+    if (count === 0) {
+      return NextResponse.json({ error: "This request changed — please refresh and try again" }, { status: 409 });
+    }
+    const updated = { ...request, status: "PACKED" as const, packedAt };
 
     const adminName = session.user.username ?? session.user.firstName ?? session.user.email;
     resolveCollectionNotification({

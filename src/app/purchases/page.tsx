@@ -86,14 +86,19 @@ export default function PurchasesPage() {
     }
 
     let attempts = 0;
+    // Stops the chain on unmount / dep change so a stale poll can't keep
+    // firing requests or set state after the page is gone.
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const MAX_ATTEMPTS = 8;   // 8 × 2 s = 16 s max
     const INTERVAL_MS  = 2000;
 
     const check = async () => {
       attempts++;
       try {
-        const res  = await fetch(`/api/orders?sessionId=${sessionId}`);
+        const res  = await fetch(`/api/orders?sessionId=${encodeURIComponent(sessionId)}`);
         const data = await res.json();
+        if (cancelled) return;
         const sessionOrders: OrderRow[] = data.orders ?? [];
 
         const allTerminal = sessionOrders.length > 0 &&
@@ -104,22 +109,27 @@ export default function PurchasesPage() {
           setCheckoutState(anyRefunded ? "refunded" : "paid");
           // Refresh the full list so newly PAID orders appear
           const full = await fetch("/api/orders?type=purchases").then((r) => r.json());
-          if (full.orders) setPurchases(full.orders);
+          if (!cancelled && full.orders) setPurchases(full.orders);
           return;
         }
       } catch {
         // Network hiccup — keep trying
       }
 
+      if (cancelled) return;
       if (attempts >= MAX_ATTEMPTS) {
         setCheckoutState("timeout");
       } else {
-        setTimeout(check, INTERVAL_MS);
+        timer = setTimeout(check, INTERVAL_MS);
       }
     };
 
     // Small initial delay — give the webhook a head start
-    setTimeout(check, 1500);
+    timer = setTimeout(check, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn, sessionId]);
 

@@ -77,6 +77,9 @@ interface BuyBoxProps {
 
   onPlaceOffer: () => void;
   onBuyNow: () => void;
+  // True while a Buy Now checkout request is in flight — disables the button
+  // so a double click can't open two checkout sessions.
+  buyNowPending?: boolean;
 
   mode?: "viewer" | "owner";
   offersCount?: number;
@@ -129,6 +132,7 @@ export default function BuyBox({
   primaryBlue,
   onPlaceOffer,
   onBuyNow,
+  buyNowPending = false,
   mode = "viewer",
   offersCount = 0,
   onEdit,
@@ -155,7 +159,7 @@ export default function BuyBox({
   useEffect(() => {
     if (!tcgPlayerId) return;
     fetch(
-      `/api/cards?tcgPlayerId=${encodeURIComponent(tcgPlayerId)}&forSale=true`
+      `/api/cards?tcgPlayerId=${encodeURIComponent(tcgPlayerId)}`
     )
       .then((r) => r.json())
       .then((data) => {
@@ -782,7 +786,7 @@ export default function BuyBox({
                 variant="contained"
                 startIcon={isOwnerMode ? <EditIcon /> : <ShoppingCartIcon />}
                 onClick={isOwnerMode ? onEdit : onBuyNow}
-                disabled={rightBtnDisabled}
+                disabled={rightBtnDisabled || (!isOwnerMode && buyNowPending)}
                 sx={{
                   textTransform: "none",
                   backgroundColor: "#5b7fe8",

@@ -35,7 +35,7 @@ export default function AllListings({
   useEffect(() => {
     if (!tcgPlayerId) return;
     fetch(
-      `/api/cards?tcgPlayerId=${encodeURIComponent(tcgPlayerId)}&forSale=true`
+      `/api/cards?tcgPlayerId=${encodeURIComponent(tcgPlayerId)}`
     )
       .then((r) => r.json())
       .then((data) => {

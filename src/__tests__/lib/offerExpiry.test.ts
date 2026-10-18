@@ -30,12 +30,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockStripeInstance = vi.hoisted(() => ({
   paymentIntents: {
     cancel: vi.fn(),
+    retrieve: vi.fn(), // recoverStuckAcceptedOffer: checks whether the PI was captured
+  },
+  refunds: {
+    create: vi.fn(),   // recoverStuckAcceptedOffer: refunds a captured PI
   },
 }));
 
 const mockPrisma = vi.hoisted(() => ({
   offer: {
-    update: vi.fn(),
+    updateMany: vi.fn(),
   },
 }));
 
@@ -57,7 +61,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 // This runs after the mocks are in place. When offerExpiry.ts is loaded it
 // imports stripe and prisma — both of which are now the fakes from step 2.
 
-import { expireOffer } from "@/lib/offerExpiry";
+import { expireOffer, recoverStuckAcceptedOffer } from "@/lib/offerExpiry";
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -71,7 +75,7 @@ describe("expireOffer", () => {
     // Default: PI cancel succeeds
     mockStripeInstance.paymentIntents.cancel.mockResolvedValue({});
     // Default: DB update succeeds
-    mockPrisma.offer.update.mockResolvedValue({
+    mockPrisma.offer.updateMany.mockResolvedValue({
       id: "offer-1",
       status: "expired",
     });
@@ -100,8 +104,8 @@ describe("expireOffer", () => {
     );
 
     // Did your code call Prisma's update with the correct offer id and status?
-    expect(mockPrisma.offer.update).toHaveBeenCalledWith({
-      where: { id: "offer-1" },
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-1", status: "pending" },
       data: { status: "expired" },
     });
   });
@@ -124,8 +128,8 @@ describe("expireOffer", () => {
     expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
 
     // DB must still be updated — the offer should be marked expired regardless
-    expect(mockPrisma.offer.update).toHaveBeenCalledWith({
-      where: { id: "offer-1" },
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-1", status: "pending" },
       data: { status: "expired" },
     });
   });
@@ -155,7 +159,27 @@ describe("expireOffer", () => {
     await expect(expireOffer(OFFER)).resolves.not.toThrow();
 
     // DB update must still run — offer should be marked expired regardless
-    expect(mockPrisma.offer.update).toHaveBeenCalled();
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalled();
+  });
+
+  it("refunds a captured PI when it is the call that expires the still-pending offer", async () => {
+    mockStripeInstance.paymentIntents.cancel.mockRejectedValue(
+      Object.assign(new Error("captured"), { code: "payment_intent_unexpected_state" })
+    );
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ status: "succeeded" });
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
+    await expireOffer(OFFER);
+    expect(mockStripeInstance.refunds.create).toHaveBeenCalledWith({ payment_intent: OFFER.paymentIntentId });
+  });
+
+  it("does not refund when a concurrent accept already moved the offer out of pending", async () => {
+    mockStripeInstance.paymentIntents.cancel.mockRejectedValue(
+      Object.assign(new Error("captured"), { code: "payment_intent_unexpected_state" })
+    );
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ status: "succeeded" });
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 0 });
+    await expireOffer(OFFER);
+    expect(mockStripeInstance.refunds.create).not.toHaveBeenCalled();
   });
 
   // ── Unexpected Stripe error ─────────────────────────────────────────────────
@@ -185,6 +209,47 @@ describe("expireOffer", () => {
     await expect(expireOffer(OFFER)).rejects.toThrow("Network error");
 
     // DB must NOT be updated — offer stays "pending" so the cron can retry
-    expect(mockPrisma.offer.update).not.toHaveBeenCalled();
+    expect(mockPrisma.offer.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+// ── recoverStuckAcceptedOffer ────────────────────────────────────────────────
+// An accept that died between its claim and its capture/revert leaves the
+// offer "accepted" forever. The cron releases the hold (uncaptured) or refunds
+// (captured), then closes the offer — conditionally on still being "accepted".
+describe("recoverStuckAcceptedOffer", () => {
+  const STUCK = { id: "offer-9", paymentIntentId: "pi_9" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
+    mockStripeInstance.paymentIntents.cancel.mockResolvedValue({});
+    mockStripeInstance.refunds.create.mockResolvedValue({});
+  });
+
+  it("cancels a requires_capture PI and marks the offer expired", async () => {
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ status: "requires_capture" });
+
+    await recoverStuckAcceptedOffer(STUCK);
+
+    expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_9");
+    expect(mockStripeInstance.refunds.create).not.toHaveBeenCalled();
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-9", status: "accepted" },
+      data: { status: "expired" },
+    });
+  });
+
+  it("refunds a succeeded (captured) PI and marks the offer expired", async () => {
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ status: "succeeded" });
+
+    await recoverStuckAcceptedOffer(STUCK);
+
+    expect(mockStripeInstance.refunds.create).toHaveBeenCalledWith({ payment_intent: "pi_9" });
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith({
+      where: { id: "offer-9", status: "accepted" },
+      data: { status: "expired" },
+    });
   });
 });

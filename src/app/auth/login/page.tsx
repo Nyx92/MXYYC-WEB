@@ -43,13 +43,24 @@ function GoogleIcon() {
   );
 }
 
+// Where to land after login — the ?callbackUrl= set by requireLogin-style
+// redirects. Only same-origin paths are honoured: "//evil.com" and "/\\evil.com"
+// are protocol-relative to browsers, so they'd be an open redirect.
+// Read from window.location at click time rather than useSearchParams, which
+// would force a Suspense boundary and client-render the whole page.
+function getCallbackUrl(): string {
+  const url = new URLSearchParams(window.location.search).get("callbackUrl");
+  if (!url || !url.startsWith("/") || url.startsWith("//") || url.startsWith("/\\")) return "/";
+  return url;
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [isFailedLogin, setIsFailedLogin] = useState(false);
 
-  const handleGoogleSignIn = () => signIn("google", { callbackUrl: "/" });
+  const handleGoogleSignIn = () => signIn("google", { callbackUrl: getCallbackUrl() });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,7 +77,7 @@ export default function LoginPage() {
         email,
         password,
         redirect: false, // prevent automatic redirect; we’ll redirect manually after success
-        callbackUrl: "/", // where to go after successful login
+        callbackUrl: getCallbackUrl(), // where to go after successful login
       });
       if (res?.error) {
         setIsFailedLogin(true);

@@ -70,8 +70,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Incorrect code" }, { status: 400 });
     }
 
-    await prisma.user.update({
-      where: { id: userId },
+    // Conditional on the hash we just checked still being the stored one:
+    // PUT /api/user clears it when the phone changes, so a confirm racing a
+    // phone change can't mark the NEW (unproven) value verified.
+    const { count } = await prisma.user.updateMany({
+      where: { id: userId, phoneVerificationCodeHash: user.phoneVerificationCodeHash },
       data: {
         phoneVerified: true,
         phoneVerificationCodeHash: null,
@@ -79,6 +82,10 @@ export async function POST(req: NextRequest) {
         phoneVerificationAttempts: 0,
       },
     });
+
+    if (count !== 1) {
+      return NextResponse.json({ error: "Your phone changed. Request a new code." }, { status: 409 });
+    }
 
     return NextResponse.json({ message: "Phone number verified." });
   } catch (err) {

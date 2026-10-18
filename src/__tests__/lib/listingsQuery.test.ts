@@ -28,14 +28,14 @@ beforeEach(() => {
 
 describe("getListingsPage", () => {
   it("returns cards with price converted to dollars", async () => {
-    const result = await getListingsPage({ forSale: true, game: "POKEMON", page: 1, pageSize: 24 });
+    const result = await getListingsPage({ game: "POKEMON", page: 1, pageSize: 24 });
 
     expect(result.cards).toHaveLength(1);
     expect(result.cards[0]).toMatchObject({ id: "listing-1", title: "Charizard", price: 50 });
   });
 
   it("shapes status/game/dates the way CardItem expects", async () => {
-    const result = await getListingsPage({ forSale: true, game: "POKEMON", page: 1, pageSize: 24 });
+    const result = await getListingsPage({ game: "POKEMON", page: 1, pageSize: 24 });
 
     expect(result.cards[0]).toMatchObject({
       status: "available",
@@ -44,23 +44,36 @@ describe("getListingsPage", () => {
     });
   });
 
-  it("passes forSale/game into the Prisma where clause", async () => {
-    await getListingsPage({ forSale: true, game: "POKEMON", page: 1, pageSize: 24 });
+  it("always restricts to for-sale listings and passes game into the Prisma where clause", async () => {
+    await getListingsPage({ game: "POKEMON", page: 1, pageSize: 24 });
 
     const call = mockPrisma.listing.findMany.mock.calls[0][0];
     expect(call.where).toEqual({ AND: [{ forSale: true }, { game: "POKEMON" }] });
   });
 
+  it("never exposes reservation or pickup bookkeeping fields", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([{
+      ...POKEMON_LISTING,
+      reservedById: "buyer-9", reservedUntil: new Date(), reservedCheckoutSessionId: "cs_123",
+      collectionRequestId: "req-1", collectedAt: null,
+    }]);
+    const result = await getListingsPage({ page: 1, pageSize: 24 });
+    const card = JSON.parse(JSON.stringify(result.cards[0]));
+    for (const f of ["reservedById", "reservedUntil", "reservedCheckoutSessionId", "collectionRequestId", "collectedAt"]) {
+      expect(card).not.toHaveProperty(f);
+    }
+  });
+
   it("computes hasMore from totalCount when paginated", async () => {
     mockPrisma.listing.count.mockResolvedValue(50);
-    const result = await getListingsPage({ forSale: true, page: 1, pageSize: 24 });
+    const result = await getListingsPage({ page: 1, pageSize: 24 });
 
     expect(result.totalCount).toBe(50);
     expect(result.hasMore).toBe(true);
   });
 
   it("does not paginate or count when page/pageSize are omitted", async () => {
-    const result = await getListingsPage({ forSale: true });
+    const result = await getListingsPage({});
 
     expect(mockPrisma.listing.count).not.toHaveBeenCalled();
     expect(result.hasMore).toBeUndefined();
@@ -68,7 +81,7 @@ describe("getListingsPage", () => {
   });
 
   it("still caps the unpaginated query at MAX_PAGE_SIZE as a safety net", async () => {
-    await getListingsPage({ forSale: true });
+    await getListingsPage({});
 
     expect(mockPrisma.listing.findMany.mock.calls[0][0].take).toBe(MAX_PAGE_SIZE);
   });

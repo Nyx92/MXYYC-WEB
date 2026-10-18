@@ -11,13 +11,20 @@ import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
  * instead, and this route — running server-side — forwards to Discord.
  *
  * Unauthenticated (any visitor's browser calls it) and posts to an external
- * webhook, so it's rate limited per IP to stop it being used to spam the
- * Discord channel or hammer the webhook.
+ * webhook, so it's rate limited per IP and globally, and postErrorAlert
+ * escapes the text, to stop it being used to spam (or phish) the Discord
+ * channel or hammer the webhook.
  */
 export async function POST(req: NextRequest) {
   const ip = getClientIp(req);
-  const { allowed } = checkRateLimit(`log-error:ip:${ip}`, { limit: 20, windowMs: 60 * 1000 });
-  if (!allowed) {
+  // Per IP, then a global budget across all callers: the alerts webhook is
+  // shared with real server errors and cron results, and Discord rate limits
+  // a webhook to ~30 posts/min. The per-IP cap is a fraction of the global
+  // one, so no single caller can use the whole browser budget.
+  if (
+    !checkRateLimit(`log-error:ip:${ip}`, { limit: 3, windowMs: 60 * 1000 }).allowed ||
+    !checkRateLimit("log-error:global", { limit: 15, windowMs: 60 * 1000 }).allowed
+  ) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
 

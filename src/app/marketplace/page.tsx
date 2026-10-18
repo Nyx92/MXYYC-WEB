@@ -61,7 +61,6 @@ export default async function MarketplacePage({
   const initialFilters = resolveInitialFilters(await searchParams);
 
   const initial = await getListingsPage({
-    forSale: true,
     game: initialFilters.game,
     setNames: initialFilters.setNames,
     page: 1,

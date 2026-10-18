@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   Box,
@@ -83,6 +83,10 @@ export default function Marketplace({
   // directly caused overlapping, doubled-up render generations).
   const [gridKey, setGridKey] = useState(0);
   const [page, setPage] = useState(1);
+  // Bumped whenever filters/search change; a load-more response tagged with
+  // an older version belongs to the previous query and is dropped instead of
+  // being appended to the new results.
+  const queryVersion = useRef(0);
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -134,7 +138,6 @@ export default function Marketplace({
 
   function buildQuery(pageNum: number) {
     const params = new URLSearchParams({
-      forSale: "true",
       page: String(pageNum),
       pageSize: String(PAGE_SIZE),
     });
@@ -175,6 +178,7 @@ export default function Marketplace({
   // effect in exactly that case (see its own comment above) without
   // reintroducing the redundant-fetch problem in the common no-search case.
   useEffect(() => {
+    queryVersion.current++;
     // The Server Component in page.tsx already fetched exactly `initialFilters`
     // (resolved from the URL's game/setName search params — defaults to
     // Riftbound/no-filters, or a carousel deep link's specific set) before
@@ -250,10 +254,12 @@ export default function Marketplace({
 
   function handleLoadMore() {
     const nextPage = page + 1;
+    const version = queryVersion.current;
     setLoadingMore(true);
     fetch(`/api/cards?${buildQuery(nextPage)}`)
       .then((r) => r.json())
       .then((data) => {
+        if (version !== queryVersion.current) return;
         setCards((prev) => [...prev, ...reorderToMatchSearch(data.cards ?? [])]);
         setHasMore(matchedIds ? matchedIds.length > nextPage * PAGE_SIZE : Boolean(data.hasMore));
         setPage(nextPage);

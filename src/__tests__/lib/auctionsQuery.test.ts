@@ -44,6 +44,8 @@ describe("getAuctionsPage", () => {
     expect(result.auctions).toHaveLength(1);
     expect(result.auctions[0]).toMatchObject({ cardId: "card-1", startingBid: 5 });
     expect(result.auctions[0].card.title).toBe("Charizard");
+    // Public response — must not leak who the leading bidder is.
+    expect(result.auctions[0]).not.toHaveProperty("highestBidderId");
   });
 
   it("does not paginate or count when page/pageSize are omitted", async () => {

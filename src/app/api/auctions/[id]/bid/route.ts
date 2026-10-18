@@ -8,6 +8,8 @@ import { settleAuction, cancelBidPI } from "@/lib/auctionSettlement";
 import { notifyAsync } from "@/lib/notifications";
 import { verifyPaymentIntentAmountOrRespond } from "@/lib/paymentIntentGuard";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
+import { rateLimitResponse } from "@/lib/rateLimit";
+import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -24,9 +26,11 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
  *      Funds are authorised (held) but NOT charged yet.
  *
  * Flow:
- *   1. Auth + parse body.
- *   2. Re-validate auction state (active, not ended).
- *   3. Verify PI status with Stripe (must be "requires_capture").
+ *   1. Auth, rate limit, purchase-verification gate, parse body.
+ *   2. Verify the PI with Stripe: metadata must name this bidder and this
+ *      auction, and status must be "requires_capture". Nothing cancels the
+ *      PI before this ownership check passes.
+ *   3. Re-validate auction state (active, not ended).
  *   4. Read the current highest bid (to cancel its PI if we win the lock).
  *   5. DB transaction with optimistic version lock:
  *      a. updateMany auction WHERE version = snapshot → 0 rows = 409 (concurrent bid)
@@ -51,6 +55,16 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
   }
   const bidderId = session.user.id;
 
+  // 🔒 Same per-user bucket rationale as POST /api/auctions/[id]/bid/intent —
+  // this route calls Stripe (retrieve/cancel/capture).
+  const limited = rateLimitResponse(`bid:${bidderId}`, { limit: 20, windowMs: 60 * 1000 });
+  if (limited) return limited;
+
+  // 🔒 Re-checked here, not only at PI creation — this is the route that
+  // commits the bid (and can capture it on buy-out).
+  const verificationError = await requireVerifiedForPurchase(bidderId);
+  if (verificationError) return verificationError;
+
   try {
     const { paymentIntentId, amount } = await req.json();
 
@@ -63,7 +77,38 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
       return NextResponse.json({ error: "Invalid bid amount" }, { status: 400 });
     }
 
-    // ── 2. Load the auction snapshot ─────────────────────────────────────────
+    // ── 2. Verify the PI belongs to this bidder AND this auction ─────────────
+    // Runs before anything that can cancel the PI, so a caller can never
+    // cancel (or bid with) someone else's authorised hold — e.g. an offer PI
+    // id, which sellers can see, or a PI authorised for a different auction.
+    // Must be "requires_capture" — means the buyer's card was successfully
+    // authorised in the browser (funds are held, not charged yet).
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    if (pi.metadata?.bidderId !== bidderId || pi.metadata?.auctionId !== auctionId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+    if (pi.status !== "requires_capture") {
+      return NextResponse.json(
+        { error: `Payment authorisation failed (status: ${pi.status})` },
+        { status: 409 }
+      );
+    }
+    // A PI backs exactly one bid. Re-submitting one already on a Bid row
+    // (e.g. your own current top bid) must not reach the cancel paths below,
+    // or the live bid would be left pointing at a cancelled hold that can
+    // never be captured.
+    const alreadyUsed = await prisma.bid.findFirst({
+      where:  { paymentIntentId },
+      select: { id: true },
+    });
+    if (alreadyUsed) {
+      return NextResponse.json(
+        { error: "This payment authorisation has already been used for a bid" },
+        { status: 409 }
+      );
+    }
+
+    // ── 3. Load the auction snapshot ─────────────────────────────────────────
     const auction = await prisma.auction.findUnique({
       where:  { id: auctionId },
       select: {
@@ -99,26 +144,19 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
         { status: 400 }
       );
     }
+    if (auction.buyOutPrice !== null && amountCents > auction.buyOutPrice) {
+      await cancelSafely(paymentIntentId);
+      return NextResponse.json(
+        { error: `Bid cannot exceed the buy-out price of S$${(auction.buyOutPrice / 100).toFixed(2)}` },
+        { status: 400 }
+      );
+    }
     if (auction.currentBid !== null && amountCents <= auction.currentBid) {
       await cancelSafely(paymentIntentId);
       return NextResponse.json(
         { error: `Bid must be higher than the current bid of S$${(auction.currentBid / 100).toFixed(2)}` },
         { status: 400 }
       );
-    }
-
-    // ── 3. Verify PI is properly authorised ──────────────────────────────────
-    // Must be "requires_capture" — means the buyer's card was successfully
-    // authorised in the browser (funds are held, not charged yet).
-    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-    if (pi.status !== "requires_capture") {
-      return NextResponse.json(
-        { error: `Payment authorisation failed (status: ${pi.status})` },
-        { status: 409 }
-      );
-    }
-    if (pi.metadata?.bidderId && pi.metadata.bidderId !== bidderId) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     // ── 3b. Verify the authorised amount matches the claimed bid ─────────────
@@ -194,6 +232,14 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
           { status: 409 }
         );
       }
+      // Unique index on Bid.paymentIntentId: a simultaneous copy of this
+      // request already saved a bid with this PI. Its hold must stay live.
+      if ((err as { code?: string })?.code === "P2002") {
+        return NextResponse.json(
+          { error: "This payment authorisation has already been used for a bid" },
+          { status: 409 }
+        );
+      }
       // Unexpected DB error — cancel our PI so funds are not stranded.
       await cancelSafely(paymentIntentId);
       throw err;
@@ -238,7 +284,15 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
 
     if (hitsBuyOut) {
       console.log(`[auctions/bid POST] Buy-out price hit — settling auction ${auctionId}`);
-      await settleAuction(auctionId);
+      // The bid is already committed. If settling fails (capture decline,
+      // lost claim), report the bid as placed-but-unsettled rather than
+      // "failed" — the cron settles it at endsAt.
+      try {
+        await settleAuction(auctionId);
+      } catch (settleErr) {
+        console.error(`[auctions/bid POST] Instant settlement failed for ${auctionId}:`, settleErr);
+        return NextResponse.json({ success: true, settled: false });
+      }
       return NextResponse.json({ success: true, settled: true });
     }
 
@@ -250,9 +304,17 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
 }
 
 // Cancels a PI silently — used to clean up when validation fails after
-// the buyer already authorised their card.
+// the buyer already authorised their card. Never cancels a PI that a saved
+// bid uses: if the same request arrives twice at once, the copy that loses
+// the version lock must not void the hold behind the copy that won — every
+// saved bid has to keep a capturable payment.
 async function cancelSafely(paymentIntentId: string): Promise<void> {
   try {
+    const savedBid = await prisma.bid.findFirst({
+      where:  { paymentIntentId },
+      select: { id: true },
+    });
+    if (savedBid) return;
     await stripe.paymentIntents.cancel(paymentIntentId);
   } catch {
     // PI may already be in a terminal state — safe to ignore.

@@ -21,6 +21,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
 import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
+import { rateLimitResponse } from "@/lib/rateLimit";
+import { releaseCheckoutReservation } from "@/lib/webhookHelpers";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -33,6 +35,18 @@ export async function POST(_req: NextRequest) {
   if (!buyerId) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
+
+  // 🔒 Rate limit by user id — shared with POST /api/checkout. Each
+  // call creates a Stripe Checkout Session AND holds the listing(s) for
+  // 15 minutes, so the cap also bounds how many listings one account can
+  // keep locked away from other buyers. In-memory stopgap (see
+  // src/lib/rateLimit.ts).
+  const limited = rateLimitResponse(
+    `checkout:${buyerId}`,
+    { limit: 10, windowMs: 15 * 60 * 1000 },
+    "Too many checkout attempts. Please try again in a few minutes."
+  );
+  if (limited) return limited;
 
   // 🔒 Buyer must have verified both email and phone before committing to
   // any purchase. See src/lib/purchaseVerification.ts.
@@ -170,6 +184,14 @@ export async function POST(_req: NextRequest) {
         checkoutType: "cart",
         buyerId,
       },
+    }).catch(async (stripeErr) => {
+      // Release the holds + PENDING orders from step 3 (see releaseCheckoutReservation).
+      await releaseCheckoutReservation(
+        buyerId,
+        orders.map((o) => o.orderId),
+        orders.map((o) => o.listingId)
+      );
+      throw stripeErr;
     });
 
     // ── 6. Stamp Orders + Listings with the session ID ────────────────────────

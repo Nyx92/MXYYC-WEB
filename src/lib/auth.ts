@@ -29,6 +29,7 @@ import GoogleProvider from "next-auth/providers/google";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { checkRateLimit } from "@/lib/rateLimit";
 
 /* -------------------------------------------------------------------------- */
@@ -159,7 +160,9 @@ export const authOptions: NextAuthOptions = {
           ?.toString()
           .split(",")[0]
           ?.trim();
-        const rateLimitKey = ip ? `${ip}:${credentials.email}` : credentials.email;
+        const email = credentials.email.trim();
+        // Lowercased so case variants of one address share a bucket.
+        const rateLimitKey = ip ? `${ip}:${email.toLowerCase()}` : email.toLowerCase();
 
         const { allowed } = checkRateLimit(rateLimitKey, {
           limit: 5,
@@ -170,9 +173,11 @@ export const authOptions: NextAuthOptions = {
         // signal to enumerate which emails have accounts.
         if (!allowed) return null;
 
-        // 1️⃣ Look up the user by email in the Prisma `User` table
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email },
+        // 1️⃣ Look up the user by email in the Prisma `User` table —
+        // case-insensitively, since accounts created before signup started
+        // lowercasing emails may still be stored mixed-case.
+        const user = await prisma.user.findFirst({
+          where: { email: { equals: email, mode: "insensitive" } },
         });
 
         // 2️⃣ Google-only accounts have no password — reject credentials attempts
@@ -327,36 +332,52 @@ export const authOptions: NextAuthOptions = {
           token.verified  = user.verified  ?? false;
         }
 
+        token.pwv = await currentPasswordVersion(user.id);
         return token;
       }
 
+      // 🧩 Every later use of the token — revalidate against the DB.
+      //   The JWT is otherwise trusted for its whole (sliding) 30-day life, so
+      //   without this a password reset wouldn't evict a stolen session, and a
+      //   demoted admin would keep `role: "admin"`. Throwing here makes
+      //   NextAuth clear the session cookie and getServerSession() return null.
+      //   ponytail: one PK lookup per authenticated request; cache with a short
+      //   TTL if it ever shows up in DB load.
+      let dbUser;
+      try {
+        dbUser = await prisma.user.findUnique({ where: { id: token.id as string } });
+      } catch (err) {
+        // A transient DB error must not sign everyone out — keep the session
+        // as-is and revalidate on the next request.
+        console.error("⚠️ JWT revalidation error:", err);
+        return token;
+      }
+      if (!dbUser) throw new Error("Session revoked: user no longer exists");
+      // Tokens issued before this check existed carry no `pwv` and are
+      // rejected too (a one-time re-login): adopting the current value would
+      // let a token stolen before a reset survive it.
+      if (token.pwv !== passwordVersion(dbUser.password)) {
+        throw new Error("Session revoked: password changed");
+      }
+      token.role = dbUser.role;
+
       // 🧩 CASE 2 — When `useSession().update()` is called client-side
-      //   → Re-fetch the latest user record from DB to keep session fresh.
+      //   → Copy the latest user record (already loaded above) into the token.
       if (trigger === "update") {
-        try {
-          const dbUser = await prisma.user.findUnique({
-            where: { id: token.id as string },
-          });
-          if (dbUser) {
-            token.email         = dbUser.email;
-            token.firstName     = dbUser.firstName;
-            token.lastName      = dbUser.lastName;
-            token.username      = dbUser.username;
-            token.role          = dbUser.role;
-            token.country       = dbUser.country;
-            token.sex           = dbUser.sex;
-            token.dob           = dbUser.dob ? dbUser.dob.toISOString() : null;
-            token.address       = dbUser.address;
-            token.phoneNumber   = dbUser.phoneNumber;
-            token.phoneVerified = dbUser.phoneVerified;
-            token.emailVerified = dbUser.emailVerified
-              ? dbUser.emailVerified.toISOString()
-              : null;
-            token.verified      = dbUser.verified;
-          }
-        } catch (err) {
-          console.error("⚠️ JWT refresh error:", err);
-        }
+        token.email         = dbUser.email;
+        token.firstName     = dbUser.firstName;
+        token.lastName      = dbUser.lastName;
+        token.username      = dbUser.username;
+        token.country       = dbUser.country;
+        token.sex           = dbUser.sex;
+        token.dob           = dbUser.dob ? dbUser.dob.toISOString() : null;
+        token.address       = dbUser.address;
+        token.phoneNumber   = dbUser.phoneNumber;
+        token.phoneVerified = dbUser.phoneVerified;
+        token.emailVerified = dbUser.emailVerified
+          ? dbUser.emailVerified.toISOString()
+          : null;
+        token.verified      = dbUser.verified;
       }
 
       return token;
@@ -414,4 +435,18 @@ export function isAdminOrOwner(
 ): boolean {
   if (!session?.user?.id) return false;
   return session.user.role === "admin" || session.user.id === ownerId;
+}
+
+/**
+ * A short, non-reversible fingerprint of the stored password hash, kept in
+ * the JWT so a password change (reset-password) invalidates every session
+ * issued before it. Google-only accounts (no password) get a constant.
+ */
+function passwordVersion(passwordHash: string | null): string {
+  return crypto.createHash("sha256").update(passwordHash ?? "").digest("hex").slice(0, 16);
+}
+
+async function currentPasswordVersion(userId: string): Promise<string> {
+  const row = await prisma.user.findUnique({ where: { id: userId }, select: { password: true } });
+  return passwordVersion(row?.password ?? null);
 }

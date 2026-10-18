@@ -21,6 +21,7 @@ const mockStripeInstance = vi.hoisted(() => ({
 const mockPrisma = vi.hoisted(() => ({
   auction: { findUnique: vi.fn() },
   bid:     { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
+  user:    { findUnique: vi.fn() }, // requireVerifiedForPurchase
   $transaction: vi.fn(),
 }));
 
@@ -35,6 +36,7 @@ vi.mock("@/lib/prisma",    () => ({ prisma: mockPrisma }));
 vi.mock("next-auth",       () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth",      () => ({ authOptions: {} }));
 vi.mock("@/lib/notifications",      () => ({ notifyAsync: vi.fn() }));
+vi.mock("@/lib/rateLimit",          () => ({ rateLimitResponse: vi.fn(() => null) }));
 vi.mock("@/lib/auctionSettlement",  () => ({
   settleAuction: mockSettleAuction,
   cancelBidPI:   mockCancelBidPI,
@@ -85,7 +87,7 @@ const BASE_AUCTION = {
 // PI returned by stripe.paymentIntents.retrieve.
 const PI_REQUIRES_CAPTURE = {
   status:   "requires_capture",
-  metadata: { bidderId: "buyer-1" },
+  metadata: { bidderId: "buyer-1", auctionId: "auction-1" },
 };
 
 // Simulates a successful $transaction: bumps the auction version and creates a bid.
@@ -106,9 +108,12 @@ function txSuccess() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrisma.user.findUnique.mockResolvedValue({ emailVerified: new Date(), phoneVerified: true });
   mockStripeInstance.paymentIntents.cancel.mockResolvedValue({});
   mockCancelBidPI.mockResolvedValue(undefined);
   mockSettleAuction.mockResolvedValue(undefined);
+  // Default: the PI is not already attached to a Bid (reuse check passes)
+  mockPrisma.bid.findFirst.mockResolvedValue(null);
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -135,7 +140,9 @@ describe("POST /api/auctions/[id]/bid", () => {
   it("returns 403 when seller bids on own auction", async () => {
     mockGetServerSession.mockResolvedValue(SELLER_SESSION);
     mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
-    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue(PI_REQUIRES_CAPTURE);
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      ...PI_REQUIRES_CAPTURE, metadata: { bidderId: "seller-1", auctionId: "auction-1" },
+    });
     const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
     expect(res.status).toBe(403);
     expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_1");
@@ -165,11 +172,57 @@ describe("POST /api/auctions/[id]/bid", () => {
     mockGetServerSession.mockResolvedValue(BUYER_SESSION);
     mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
     mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      ...PI_REQUIRES_CAPTURE,
       status: "requires_payment_method",
-      metadata: {},
     });
     const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
     expect(res.status).toBe(409);
+  });
+
+  it("returns 409 without cancelling when the PI is already attached to a Bid", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue(PI_REQUIRES_CAPTURE);
+    mockPrisma.bid.findFirst.mockResolvedValueOnce({ id: "bid-existing" });
+
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
+    expect(res.status).toBe(409);
+    expect(mockPrisma.bid.findFirst).toHaveBeenCalledWith({
+      where: { paymentIntentId: "pi_1" }, select: { id: true },
+    });
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+    expect(mockCancelBidPI).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 without cancelling when the PI has no bidderId (e.g. a buyer's offer PI)", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue({ ...BASE_AUCTION, status: "ended" });
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      status: "requires_capture", metadata: { buyerId: "victim", cardId: "card-9" }, amount: 1000,
+    });
+    const res = await POST(postReq({ paymentIntentId: "pi_victim", amount: 10 }), PARAMS);
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+    expect(mockSettleAuction).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the PI was authorised for a different auction", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      ...PI_REQUIRES_CAPTURE, amount: 1000, metadata: { bidderId: "buyer-1", auctionId: "auction-2" },
+    });
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the bidder is not verified", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.user.findUnique.mockResolvedValue({ emailVerified: new Date(), phoneVerified: false });
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.retrieve).not.toHaveBeenCalled();
   });
 
   it("returns 409 on concurrent bid (optimistic lock miss)", async () => {
@@ -191,6 +244,39 @@ describe("POST /api/auctions/[id]/bid", () => {
     const body = await res.json();
     expect(body.error).toMatch(/concurrent|higher bid/i);
     expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_1");
+  });
+
+  it("does not cancel the hold when the lock was lost to a duplicate of the same request that already saved the bid", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ ...PI_REQUIRES_CAPTURE, amount: 1000 });
+    // Reuse check passes (the twin hasn't saved yet)…
+    mockPrisma.bid.findFirst.mockResolvedValueOnce(null);
+    mockPrisma.$transaction.mockImplementation(async (cb: (tx: typeof mockPrisma) => Promise<unknown>) => {
+      const txClient = {
+        auction: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        bid:     { update: vi.fn(), create: vi.fn() },
+      };
+      return cb(txClient as unknown as typeof mockPrisma);
+    });
+    // …but by the time this copy loses the lock, the twin's bid holds this PI.
+    mockPrisma.bid.findFirst.mockResolvedValue({ id: "bid-twin" });
+
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 without cancelling when the unique index rejects a duplicate PI", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue(BASE_AUCTION);
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ ...PI_REQUIRES_CAPTURE, amount: 1000 });
+    mockPrisma.bid.findFirst.mockResolvedValue(null);
+    mockPrisma.$transaction.mockRejectedValueOnce(Object.assign(new Error("Unique constraint"), { code: "P2002" }));
+
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 10 }), PARAMS);
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
   });
 
   it("places bid successfully and sends notifications", async () => {
@@ -223,9 +309,10 @@ describe("POST /api/auctions/[id]/bid", () => {
       ...BASE_AUCTION, currentBid: 1000, highestBidderId: "other-buyer",
     });
     mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ ...PI_REQUIRES_CAPTURE, amount: 1500 });
-    mockPrisma.bid.findFirst.mockResolvedValue({
-      id: "prev-bid-1", paymentIntentId: "pi_prev", bidderId: "other-buyer",
-    });
+    // 1st call: PI reuse check (none), 2nd call: previous highest bid
+    mockPrisma.bid.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "prev-bid-1", paymentIntentId: "pi_prev", bidderId: "other-buyer" });
     txSuccess();
 
     const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 15 }), PARAMS);
@@ -252,6 +339,30 @@ describe("POST /api/auctions/[id]/bid", () => {
     const body = await res.json();
     expect(body.settled).toBe(true);
     expect(mockSettleAuction).toHaveBeenCalledWith("auction-1");
+  });
+
+  it("reports the bid as placed-but-unsettled (200) when instant settlement throws", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue({ ...BASE_AUCTION, buyOutPrice: 2000 });
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ ...PI_REQUIRES_CAPTURE, amount: 2000 });
+    mockPrisma.bid.findFirst.mockResolvedValue(null);
+    txSuccess();
+    mockSettleAuction.mockRejectedValueOnce(new Error("capture declined"));
+
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 20 }), PARAMS);
+    expect(res.status).toBe(200);
+    expect((await res.json()).settled).toBe(false);
+  });
+
+  it("rejects a bid above the buy-out price", async () => {
+    mockGetServerSession.mockResolvedValue(BUYER_SESSION);
+    mockPrisma.auction.findUnique.mockResolvedValue({ ...BASE_AUCTION, buyOutPrice: 2000 });
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({ ...PI_REQUIRES_CAPTURE, amount: 3000 });
+    mockPrisma.bid.findFirst.mockResolvedValue(null);
+
+    const res = await POST(postReq({ paymentIntentId: "pi_1", amount: 30 }), PARAMS);
+    expect(res.status).toBe(400);
+    expect(mockSettleAuction).not.toHaveBeenCalled();
   });
 
   it("does NOT settle immediately when bid hits reservePrice — auction runs until endsAt", async () => {

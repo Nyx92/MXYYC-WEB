@@ -11,7 +11,7 @@ import {
   findOrCreateRiftboundCatalogEntry,
 } from "@/lib/listingDisplay";
 import { isValidRiftboundType, isValidRiftboundSupertype } from "@/lib/riftboundCatalog";
-import { compressCardImage, toWebpStoragePath } from "@/lib/imageProcessing";
+import { compressCardImage } from "@/lib/imageProcessing";
 import { getListingsPage } from "@/lib/listingsQuery";
 
 const supabase = createClient(
@@ -24,7 +24,7 @@ const supabase = createClient(
 // arbitrarily large "image" and force the server to buffer all of it.
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB
 
-// GET /api/cards?forSale=true
+// GET /api/cards — public; always for-sale listings only (see getListingsPage).
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -36,7 +36,6 @@ export async function GET(req: Request) {
       rawPage != null && rawPageSize != null && !Number.isNaN(rawPage) && !Number.isNaN(rawPageSize);
 
     const body = await getListingsPage({
-      forSale: searchParams.get("forSale") === "true",
       tcgPlayerId: searchParams.get("tcgPlayerId"),
       game: searchParams.get("game") as "POKEMON" | "RIFTBOUND" | null,
       setNames: searchParams.getAll("setName"),
@@ -62,6 +61,8 @@ export async function GET(req: Request) {
 
 // POST /api/cards
 export async function POST(req: Request) {
+  // Storage paths uploaded so far — removed (best-effort) if a later step fails.
+  const uploadedPaths: string[] = [];
   try {
     // This endpoint lets the caller assign the new card to ANY user (see
     // ownerId below) — it's an admin tool for listing cards on behalf of
@@ -127,6 +128,14 @@ export async function POST(req: Request) {
 
     const priceRequiredButMissing =
       forSale && (price === null || Number.isNaN(price));
+
+    // Same rule as PUT /api/cards/[id]: a for-sale card needs a positive price.
+    if (forSale && price !== null && price <= 0) {
+      return NextResponse.json(
+        { error: "Price must be greater than $0 when listing a card for sale" },
+        { status: 400 }
+      );
+    }
 
     const images = formData
       .getAll("images")
@@ -205,19 +214,22 @@ export async function POST(req: Request) {
         );
       }
 
-      const filename = toWebpStoragePath(`cards/${Date.now()}-${image.name}`);
+      // Random key, never derived from the client's filename — no path
+      // tricks, and upsert: false means one upload can't overwrite another.
+      const filename = `cards/${crypto.randomUUID()}.webp`;
 
       const { data, error } = await supabase.storage
         .from("card-images")
         .upload(filename, compressed.buffer, {
           contentType: compressed.contentType,
-          upsert: true,
+          upsert: false,
         });
 
       if (error) {
         console.error("❌ Supabase upload error:", filename, error);
         throw error;
       }
+      uploadedPaths.push(data.path);
 
       const { data: publicUrlData } = supabase.storage
         .from("card-images")
@@ -280,6 +292,13 @@ export async function POST(req: Request) {
     // the client, it can leak internal details (DB/Prisma errors, Supabase
     // errors, etc.) that aren't meant for an API consumer to see.
     console.error("❌ Error creating card:", error);
+    if (uploadedPaths.length > 0) {
+      try {
+        await supabase.storage.from("card-images").remove(uploadedPaths);
+      } catch (cleanupErr) {
+        console.error("❌ Failed to remove orphaned uploads:", uploadedPaths, cleanupErr);
+      }
+    }
     return NextResponse.json(
       { error: "Failed to create listing. Please try again." },
       { status: 500 }

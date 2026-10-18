@@ -43,11 +43,12 @@ const mockStripeInstance = vi.hoisted(() => ({
 
 const mockPrisma = vi.hoisted(() => ({
   listing: { findUnique: vi.fn() },
+  user: { findUnique: vi.fn() }, // requireVerifiedForPurchase
   offer: {
     findFirst: vi.fn(),  // checks for an existing offer from this buyer
     findMany: vi.fn(),   // returns list of offers (GET)
     create: vi.fn(),     // new offer
-    update: vi.fn(),     // amend existing offer
+    updateMany: vi.fn(), // amend existing offer (conditional PI swap)
   },
 }));
 
@@ -61,6 +62,8 @@ vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 // Silence the Resend SDK — notification side-effects are tested separately.
 vi.mock("@/lib/notifications", () => ({ notifyAsync: vi.fn(), createNotification: vi.fn() }));
+// The in-memory limiter would trip across this file's many POST cases.
+vi.mock("@/lib/rateLimit", () => ({ rateLimitResponse: vi.fn(() => null) }));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
 
@@ -92,7 +95,7 @@ const LISTING = {
 // `amount` (5000 cents = S$50) matches the default `price: 50` used by most
 // POST tests below. Tests that submit a different price (the amend tests,
 // which use price: 60) override this mock with a matching `amount`.
-const PI_REQUIRES_CAPTURE = { status: "requires_capture", metadata: { buyerId: "buyer-1" }, amount: 5000 };
+const PI_REQUIRES_CAPTURE = { status: "requires_capture", metadata: { buyerId: "buyer-1", cardId: "card-1" }, amount: 5000 };
 
 function postRequest(body: object) {
   return new NextRequest("http://localhost/api/offers", {
@@ -116,6 +119,8 @@ describe("POST /api/offers", () => {
     vi.clearAllMocks();
     // Default: authenticated buyer
     mockGetServerSession.mockResolvedValue({ user: { id: "buyer-1" } });
+    // Default: buyer has verified email + phone
+    mockPrisma.user.findUnique.mockResolvedValue({ emailVerified: new Date(), phoneVerified: true });
     // Default: listing exists and is for sale
     mockPrisma.listing.findUnique.mockResolvedValue(LISTING);
     // Default: PI is authorised and belongs to this buyer
@@ -195,6 +200,33 @@ describe("POST /api/offers", () => {
     expect(res.status).toBe(403);
   });
 
+  it("returns 403 without cancelling when the PI has no buyerId (e.g. someone's auction bid PI)", async () => {
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      status: "requires_capture",
+      metadata: { bidderId: "someone-else", auctionId: "auction-1" },
+      amount: 1,
+    });
+    const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the PI was authorised for a different card", async () => {
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      ...PI_REQUIRES_CAPTURE,
+      metadata: { buyerId: "buyer-1", cardId: "card-2" },
+    });
+    const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 403 when the buyer is not verified", async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({ emailVerified: null, phoneVerified: true });
+    const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
+    expect(res.status).toBe(403);
+    expect(mockStripeInstance.paymentIntents.retrieve).not.toHaveBeenCalled();
+  });
+
   it("returns 400 and cancels the PI when its authorised amount doesn't match the claimed price", async () => {
     const res = await POST(postRequest({ cardId: "card-1", price: 500, paymentIntentId: "pi_1" }));
     expect(res.status).toBe(400);
@@ -248,8 +280,24 @@ describe("POST /api/offers", () => {
 
   // ── Existing accepted offer ───────────────────────────────────────────────
 
+  it("answers a retried submission of an already-stored PI idempotently without cancelling it", async () => {
+    mockPrisma.offer.findFirst.mockResolvedValueOnce({
+      id: "offer-1", buyerId: "buyer-1", status: "pending", listingId: "card-1", price: 5000, paymentIntentId: "pi_1",
+    });
+    const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
+    expect(res.status).toBe(200);
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalled();
+    expect(mockPrisma.offer.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when the unique index rejects a PI a simultaneous request just stored", async () => {
+    mockPrisma.offer.create.mockRejectedValueOnce(Object.assign(new Error("Unique constraint"), { code: "P2002" }));
+    const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
+    expect(res.status).toBe(409);
+  });
+
   it("returns 409 when buyer already has an accepted offer (mid-capture)", async () => {
-    mockPrisma.offer.findFirst.mockResolvedValue({ id: "offer-old", status: "accepted" });
+    mockPrisma.offer.findFirst.mockResolvedValueOnce(null).mockResolvedValue({ id: "offer-old", status: "accepted" });
 
     const res = await POST(postRequest({ cardId: "card-1", price: 50, paymentIntentId: "pi_1" }));
     expect(res.status).toBe(409);
@@ -261,24 +309,15 @@ describe("POST /api/offers", () => {
   it("cancels the old PI and updates the existing pending offer (amended: true)", async () => {
     const existingOffer = {
       id: "offer-old",
+      listingId: "card-1",
       status: "pending",
       paymentIntentId: "pi_old",
     };
-    mockPrisma.offer.findFirst.mockResolvedValue(existingOffer);
+    mockPrisma.offer.findFirst.mockResolvedValueOnce(null).mockResolvedValue(existingOffer);
     mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
-      status: "requires_capture", metadata: { buyerId: "buyer-1" }, amount: 6000,
+      status: "requires_capture", metadata: { buyerId: "buyer-1", cardId: "card-1" }, amount: 6000,
     });
-
-    const updatedOffer = {
-      id: "offer-old",
-      listingId: "card-1",
-      price: 6000,
-      message: "Can pick up in person",
-      status: "pending",
-      paymentIntentId: "pi_new",
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    };
-    mockPrisma.offer.update.mockResolvedValue(updatedOffer);
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await POST(
       postRequest({ cardId: "card-1", price: 60, message: "Can pick up in person", paymentIntentId: "pi_new" })
@@ -288,12 +327,14 @@ describe("POST /api/offers", () => {
     expect(res.status).toBe(200);
     expect(data.amended).toBe(true);
     expect(data.offer.cardId).toBe("card-1");
+    expect(data.offer.price).toBe(60);
 
     expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_old");
 
-    expect(mockPrisma.offer.update).toHaveBeenCalledWith(
+    // Swap is conditional on the offer still being pending with the PI we read
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "offer-old" },
+        where: { id: "offer-old", status: "pending", paymentIntentId: "pi_old" },
         data: expect.objectContaining({
           paymentIntentId: "pi_new",
           expiresAt: expect.any(Date),
@@ -301,28 +342,44 @@ describe("POST /api/offers", () => {
       })
     );
 
-    const updateCall = mockPrisma.offer.update.mock.calls[0][0];
+    const updateCall = mockPrisma.offer.updateMany.mock.calls[0][0];
     expect(updateCall.data).not.toHaveProperty("sellerId");
   });
 
-  it("notifies the seller with the updated price when an offer is amended", async () => {
-    mockPrisma.offer.findFirst.mockResolvedValue({
+  it("returns 409 and cancels the NEW PI (not the old one) when the conditional swap matches 0 rows", async () => {
+    mockPrisma.offer.findFirst.mockResolvedValueOnce(null).mockResolvedValue({
       id: "offer-old",
+      listingId: "card-1",
       status: "pending",
       paymentIntentId: "pi_old",
     });
     mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
-      status: "requires_capture", metadata: { buyerId: "buyer-1" }, amount: 6000,
+      status: "requires_capture", metadata: { buyerId: "buyer-1", cardId: "card-1" }, amount: 6000,
     });
-    mockPrisma.offer.update.mockResolvedValue({
+    // Seller accepted/rejected (or another amend landed) between read and write
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await POST(
+      postRequest({ cardId: "card-1", price: 60, paymentIntentId: "pi_new" })
+    );
+
+    expect(res.status).toBe(409);
+    expect(mockStripeInstance.paymentIntents.cancel).toHaveBeenCalledWith("pi_new");
+    expect(mockStripeInstance.paymentIntents.cancel).not.toHaveBeenCalledWith("pi_old");
+    expect(vi.mocked(notifyAsync)).not.toHaveBeenCalled();
+  });
+
+  it("notifies the seller with the updated price when an offer is amended", async () => {
+    mockPrisma.offer.findFirst.mockResolvedValueOnce(null).mockResolvedValue({
       id: "offer-old",
       listingId: "card-1",
-      price: 6000,
-      message: null,
       status: "pending",
-      paymentIntentId: "pi_new",
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      paymentIntentId: "pi_old",
     });
+    mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
+      status: "requires_capture", metadata: { buyerId: "buyer-1", cardId: "card-1" }, amount: 6000,
+    });
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
 
     await POST(
       postRequest({ cardId: "card-1", price: 60, paymentIntentId: "pi_new" })
@@ -341,25 +398,23 @@ describe("POST /api/offers", () => {
   });
 
   it("continues amending even if cancelling old PI fails (logs warning)", async () => {
-    mockPrisma.offer.findFirst.mockResolvedValue({
+    mockPrisma.offer.findFirst.mockResolvedValueOnce(null).mockResolvedValue({
       id: "offer-old",
+      listingId: "card-1",
       status: "pending",
       paymentIntentId: "pi_old",
     });
     mockStripeInstance.paymentIntents.retrieve.mockResolvedValue({
-      status: "requires_capture", metadata: { buyerId: "buyer-1" }, amount: 6000,
+      status: "requires_capture", metadata: { buyerId: "buyer-1", cardId: "card-1" }, amount: 6000,
     });
     mockStripeInstance.paymentIntents.cancel.mockRejectedValue(new Error("already cancelled"));
-    mockPrisma.offer.update.mockResolvedValue({
-      id: "offer-old", listingId: "card-1", price: 6000, message: null, status: "pending",
-      paymentIntentId: "pi_new", expiresAt: new Date(),
-    });
+    mockPrisma.offer.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await POST(
       postRequest({ cardId: "card-1", price: 60, paymentIntentId: "pi_new" })
     );
     expect(res.status).toBe(200);
-    expect(mockPrisma.offer.update).toHaveBeenCalled();
+    expect(mockPrisma.offer.updateMany).toHaveBeenCalled();
   });
 });
 

@@ -98,11 +98,28 @@ export function resolveCatalogDisplayCore(listing: {
 // the raw pokemonCard/riftboundCard relation objects from the result (the
 // frontend doesn't consume those — it reads the flat fields this spreads
 // in, same names/types the old Card model had).
+//
+// Also drops the Buy Now reservation and pickup bookkeeping columns: this
+// shape is what public endpoints return, and those columns reveal who is
+// checking out a card right now (reservedById), their Stripe session id, and
+// pickup timing. Server logic that needs them reads Prisma rows directly.
+type PrivateListingField =
+  | "reservedById"
+  | "reservedUntil"
+  | "reservedCheckoutSessionId"
+  | "collectedAt";
+
 export function withListingDisplay<T extends ListingWithCatalog>(
   listing: T
-): Omit<T, "pokemonCard" | "riftboundCard"> & ListingDisplayFields {
-  const { pokemonCard, riftboundCard, ...rest } = listing;
-  return { ...rest, ...resolveListingDisplay(listing) };
+): Omit<T, "pokemonCard" | "riftboundCard" | PrivateListingField> & ListingDisplayFields {
+  const {
+    pokemonCard, riftboundCard,
+    reservedById, reservedUntil, reservedCheckoutSessionId, collectedAt,
+    ...rest
+  } = listing as T & Partial<Record<PrivateListingField, unknown>>;
+  return { ...rest, ...resolveListingDisplay(listing) } as Omit<
+    T, "pokemonCard" | "riftboundCard" | PrivateListingField
+  > & ListingDisplayFields;
 }
 
 // Single source of truth for the card-detail page's data, shared by GET
@@ -154,6 +171,8 @@ export async function getCardDetailForViewer(
     // later client fetch are byte-identical, whichever path a consumer hit.
     createdAt: rest.createdAt.toISOString(),
     updatedAt: rest.updatedAt.toISOString(),
+    // Public page — pickup bookkeeping is the owner's business only.
+    collectionRequestId: undefined,
     // `game` is stored as a plain String column (not a Prisma enum), so it
     // needs the same trust-the-application-invariant cast every other
     // consumer of this data already relies on implicitly.

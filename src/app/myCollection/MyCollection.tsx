@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box,
   TextField,
@@ -327,6 +327,9 @@ export default function MyCollection() {
   const [cards, setCards] = useState<CardItem[]>([]);
   const [gridKey, setGridKey] = useState(0);
   const [page, setPage] = useState(1);
+  // Drops load-more responses from a previous filter/search (or from before
+  // a refetchFirstPage) — see MarketPlace.tsx.
+  const queryVersion = useRef(0);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -402,6 +405,7 @@ export default function MyCollection() {
   // its comments for why searchAwaitingIndex is handled separately from
   // the zero-matches case.
   useEffect(() => {
+    queryVersion.current++;
     if (searchAwaitingIndex) {
       // Can't tell yet whether this search has zero matches or many — see
       // MarketPlace.tsx's identical branch for the full rationale. Render
@@ -449,10 +453,12 @@ export default function MyCollection() {
 
   function handleLoadMore() {
     const nextPage = page + 1;
+    const version = queryVersion.current;
     setLoadingMore(true);
     fetch(`/api/user/cards?${buildQuery(nextPage)}`)
       .then((r) => r.json())
       .then((data) => {
+        if (version !== queryVersion.current) return;
         const normalized = (data.cards ?? []).map((c: any) => ({
           ...c,
           price: c.price != null ? centsToDollars(c.price) : null,
@@ -469,6 +475,7 @@ export default function MyCollection() {
   // page reload. Deliberately resets to page 1 (simplest correct state
   // after a mutation; re-clicking Load More recovers any later pages).
   const refetchFirstPage = useCallback(() => {
+    queryVersion.current++;
     setLoading(true);
     fetch(`/api/user/cards?${buildQuery(1)}`)
       .then((r) => r.json())

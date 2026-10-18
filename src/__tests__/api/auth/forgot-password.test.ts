@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  user: { findUnique: vi.fn(), update: vi.fn(), count: vi.fn() },
+  user: { findFirst: vi.fn(), update: vi.fn(), count: vi.fn() },
 }));
 
 const mockSendEmailAsync = vi.hoisted(() => vi.fn());
@@ -23,9 +23,10 @@ vi.mock("@/lib/email", () => ({
 
 import { POST } from "@/app/api/auth/forgot-password/route";
 
-function postRequest(body: Record<string, unknown>) {
+function postRequest(body: Record<string, unknown>, headers: Record<string, string> = {}) {
   return new Request("http://localhost/api/auth/forgot-password", {
     method: "POST",
+    headers,
     body: JSON.stringify(body),
   });
 }
@@ -39,7 +40,7 @@ describe("POST /api/auth/forgot-password", () => {
   });
 
   it("returns the generic message, does a dummy DB op, and sends no email when the address doesn't match any account", async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(null);
+    mockPrisma.user.findFirst.mockResolvedValue(null);
 
     const res = await POST(postRequest({ email: "nobody@example.com" }) as any);
     const body = await res.json();
@@ -55,7 +56,7 @@ describe("POST /api/auth/forgot-password", () => {
   });
 
   it("returns the same generic message, does a dummy DB op, and sends no email for a Google-only account (no password set)", async () => {
-    mockPrisma.user.findUnique.mockResolvedValue({ id: "user-1", password: null });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: "user-1", password: null });
 
     const res = await POST(postRequest({ email: "google-user@example.com" }) as any);
     const body = await res.json();
@@ -68,7 +69,7 @@ describe("POST /api/auth/forgot-password", () => {
   });
 
   it("stores a token hash + expiry and emails a reset link for a real credentials account", async () => {
-    mockPrisma.user.findUnique.mockResolvedValue({ id: "user-1", password: "hashed" });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: "user-1", password: "hashed" });
 
     const res = await POST(postRequest({ email: "ash@example.com" }) as any);
     expect(res.status).toBe(200);
@@ -92,8 +93,28 @@ describe("POST /api/auth/forgot-password", () => {
     expect(resetUrl).not.toContain(updateArgs.data.passwordResetTokenHash);
   });
 
+  it("looks the user up case-insensitively so legacy mixed-case accounts still match", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue(null);
+    await POST(postRequest({ email: " Ash@Example.com " }) as any);
+    expect(mockPrisma.user.findFirst).toHaveBeenCalledWith({
+      where: { email: { equals: "Ash@Example.com", mode: "insensitive" } },
+      select: { id: true, password: true },
+    });
+  });
+
+  it("stops sending after 3 requests per target email but keeps the same generic response", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ id: "user-9", password: "hashed" });
+    for (let i = 0; i < 4; i++) {
+      const res = await POST(
+        postRequest({ email: "Flooded@example.com" }, { "x-forwarded-for": `10.0.0.${i}` }) as any
+      );
+      expect(res.status).toBe(200);
+    }
+    expect(mockSendEmailAsync).toHaveBeenCalledTimes(3);
+  });
+
   it("returns 500 on unexpected DB error", async () => {
-    mockPrisma.user.findUnique.mockRejectedValue(new Error("DB down"));
+    mockPrisma.user.findFirst.mockRejectedValue(new Error("DB down"));
 
     const res = await POST(postRequest({ email: "ash@example.com" }) as any);
     expect(res.status).toBe(500);

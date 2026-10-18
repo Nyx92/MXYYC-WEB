@@ -103,6 +103,7 @@ async function main() {
     for (const f of failures) {
       console.error(`   ${(f.item as { riftboundId: string }).riftboundId}: ${(f.reason as Error)?.message ?? f.reason}`);
     }
+    process.exitCode = 1;
   }
 }
 

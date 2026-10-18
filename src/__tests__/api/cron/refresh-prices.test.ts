@@ -190,6 +190,19 @@ describe("GET /api/cron/refresh-prices", () => {
     expect(data.errors[0]).toContain("500");
   });
 
+  it("doesn't count a batch as refreshed when its price write fails", async () => {
+    mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
+      { id: "pkm-1", tcgPlayerId: "42360", language: "English" },
+    ]);
+    mockFetchCardVariantsBatch.mockResolvedValue(new Map([["42360", [NEAR_MINT_VARIANT]]]));
+    mockPrisma.priceHistory.createMany.mockRejectedValueOnce(new Error("db write failed"));
+
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+
+    expect(data.rawRefreshed).toBe(0);
+    expect(data.failed).toBe(1);
+  });
+
   it("continues when one graded card's v2 call fails", async () => {
     mockPrisma.pokemonCardCatalog.findMany.mockResolvedValue([
       { id: "pkm-1", tcgPlayerId: "42360", language: "English" },

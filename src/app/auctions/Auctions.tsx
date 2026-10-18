@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   Box,
   TextField,
@@ -77,6 +77,8 @@ export default function Auctions({
   // Same settle-based key as MarketPlace.tsx's gridKey — see its comment.
   const [gridKey, setGridKey] = useState(0);
   const [page, setPage] = useState(1);
+  // Drops load-more responses from a previous filter/search — see MarketPlace.tsx.
+  const queryVersion = useRef(0);
   const [hasMore, setHasMore] = useState(initialHasMore);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -135,6 +137,7 @@ export default function Auctions({
   // MarketPlace.tsx's identical effect (see its comments for the full
   // rationale on the skip-check, the AbortController, and searchAwaitingIndex).
   useEffect(() => {
+    queryVersion.current++;
     if (auctions === initialAuctions && search === "" && isSameAuctionsView(filters, initialFilters)) {
       return;
     }
@@ -183,10 +186,12 @@ export default function Auctions({
 
   function handleLoadMore() {
     const nextPage = page + 1;
+    const version = queryVersion.current;
     setLoadingMore(true);
     fetch(`/api/auctions?${buildQuery(nextPage)}`)
       .then((r) => r.json())
       .then((data) => {
+        if (version !== queryVersion.current) return;
         setAuctions((prev) => [...prev, ...reorderToMatchSearch(data.auctions ?? [])]);
         setHasMore(matchedIds ? matchedIds.length > nextPage * PAGE_SIZE : Boolean(data.hasMore));
         setPage(nextPage);

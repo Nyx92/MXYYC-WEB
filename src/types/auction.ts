@@ -38,8 +38,6 @@ export interface AuctionItem {
   buyOutPrice:  number | null;
   currentBid:   number | null;
 
-  highestBidderId: string | null;
-
   // active | pending_seller_decision | sold | expired
   status: string;
 

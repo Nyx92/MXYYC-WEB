@@ -17,7 +17,7 @@
 import { useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { Box, Typography, Button, CircularProgress } from "@mui/material";
+import { Box, Typography, Button, CircularProgress, Alert } from "@mui/material";
 import { formatTimeRemaining } from "@/lib/formatTimeRemaining";
 
 // ── Design tokens ──────────────────────────────────────────────────────────────
@@ -35,8 +35,8 @@ export interface OrderRow {
   currency: string;
   createdAt: string;
   card: { id: string; title: string; imageUrl: string | null; condition: string };
-  seller: { id: string; username: string | null; email: string };
-  buyer:  { id: string; username: string | null; email: string };
+  seller: { id: string; username: string | null };
+  buyer:  { id: string; username: string | null };
 }
 
 /** An offer I placed on someone else's card — from GET /api/offers?mine=true */
@@ -256,16 +256,23 @@ export function PlacedOfferCard({ offer }: { offer: OfferRow }) {
  *   whether to remove the offer (accept → card is gone) or update its status
  *   in-place (reject → moves to Expired tab without requiring a page refresh).
  *   See: src/app/api/offers/[id]/route.ts for the full accept/reject flow.
+ *
+ * onStale():
+ *   Called on a 409 — the offer changed underneath us (expired, withdrawn,
+ *   already handled) so the parent should refetch its list.
  */
 export function ReceivedOfferCard({
   offer,
   onRespond,
+  onStale,
 }: {
   offer: ReceivedOfferRow;
   onRespond: (id: string, action: "accept" | "reject") => void;
+  onStale?: () => void;
 }) {
   const router = useRouter();
   const [actioning, setActioning] = useState<"accept" | "reject" | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Determines which display mode to use — actionable vs history-only.
   const isPending = offer.status === "pending";
@@ -282,6 +289,7 @@ export function ReceivedOfferCard({
 
   const handleAction = async (action: "accept" | "reject") => {
     setActioning(action);
+    setError(null);
     try {
       const res = await fetch(`/api/offers/${offer.id}`, {
         method: "PATCH",
@@ -291,9 +299,15 @@ export function ReceivedOfferCard({
       // Pass the action to the parent so it can decide how to update local state:
       //   accept → remove the card entirely (card is now sold to the buyer)
       //   reject → update status in-place so the offer moves to the Expired tab
-      if (res.ok) onRespond(offer.id, action);
+      if (res.ok) {
+        onRespond(offer.id, action);
+        return;
+      }
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "Failed to update offer.");
+      if (res.status === 409) onStale?.();
     } catch {
-      // silently fail — user can retry
+      setError("Network error. Please try again.");
     } finally {
       setActioning(null);
     }
@@ -334,6 +348,7 @@ export function ReceivedOfferCard({
           )}
         </Box>
       </Box>
+      {error && <Alert severity="error" sx={{ mx: 2.5, mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
     </Box>
   );
 }

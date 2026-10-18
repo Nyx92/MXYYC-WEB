@@ -5,8 +5,10 @@ import { NextRequest } from "next/server";
  * GET /api/cron/expire-offers is called by Vercel's cron scheduler every
  * 5 minutes. It:
  *   1. Verifies the bearer token matches CRON_SECRET (set in Vercel env vars)
- *   2. Queries for offers with status:"pending" and expiresAt in the past
- *   3. Calls expireOffer() for each one (cancel PI + mark DB expired)
+ *   2. Queries for offers with status:"pending" and expiresAt in the past,
+ *      plus offers stuck in "accepted" for over 15 minutes
+ *   3. Calls expireOffer() for each pending one (cancel PI + mark DB expired)
+ *      and recoverStuckAcceptedOffer() for each stuck accepted one
  *   4. Returns a summary: { expired, failed, errors }
  *
  * expireOffer is mocked here (its internals are covered in offerExpiry.test.ts) —
@@ -21,11 +23,15 @@ const mockPrisma = vi.hoisted(() => ({
 }));
 
 const mockExpireOffer = vi.hoisted(() => vi.fn());
+const mockRecoverStuckAcceptedOffer = vi.hoisted(() => vi.fn());
 
 // ── STEP 2: Register the fakes ────────────────────────────────────────────────
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
-vi.mock("@/lib/offerExpiry", () => ({ expireOffer: mockExpireOffer }));
+vi.mock("@/lib/offerExpiry", () => ({
+  expireOffer: mockExpireOffer,
+  recoverStuckAcceptedOffer: mockRecoverStuckAcceptedOffer,
+}));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
 
@@ -40,13 +46,14 @@ function makeRequest(authToken?: string) {
 }
 
 // Each expired offer's card reference is now `listingId` (renamed from `cardId`).
-const EXPIRED_OFFER_1 = { id: "offer-1", paymentIntentId: "pi_1", buyerId: "buyer-1", listingId: "card-1" };
-const EXPIRED_OFFER_2 = { id: "offer-2", paymentIntentId: "pi_2", buyerId: "buyer-2", listingId: "card-2" };
+const EXPIRED_OFFER_1 = { id: "offer-1", status: "pending", paymentIntentId: "pi_1", buyerId: "buyer-1", listingId: "card-1" };
+const EXPIRED_OFFER_2 = { id: "offer-2", status: "pending", paymentIntentId: "pi_2", buyerId: "buyer-2", listingId: "card-2" };
 
 describe("GET /api/cron/expire-offers (Vercel Cron)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExpireOffer.mockResolvedValue(undefined);
+    mockRecoverStuckAcceptedOffer.mockResolvedValue(undefined);
   });
 
   it("returns 401 when bearer token is wrong", async () => {
@@ -87,18 +94,33 @@ describe("GET /api/cron/expire-offers (Vercel Cron)", () => {
     expect(mockExpireOffer).toHaveBeenCalledWith(EXPIRED_OFFER_2);
   });
 
-  it("queries only pending offers with expiresAt in the past, selecting the renamed listingId field", async () => {
+  it("routes a stuck accepted offer to recoverStuckAcceptedOffer, not expireOffer", async () => {
+    const STUCK = { id: "offer-3", status: "accepted", paymentIntentId: "pi_3", buyerId: "buyer-3", listingId: "card-3" };
+    mockPrisma.offer.findMany.mockResolvedValue([STUCK]);
+
+    const res = await GET(makeRequest("test-cron-secret"));
+    const data = await res.json();
+
+    expect(data.expired).toBe(1);
+    expect(mockRecoverStuckAcceptedOffer).toHaveBeenCalledWith(STUCK);
+    expect(mockExpireOffer).not.toHaveBeenCalled();
+  });
+
+  it("queries overdue pending offers and stale accepted offers, selecting status and the renamed listingId field", async () => {
     mockPrisma.offer.findMany.mockResolvedValue([]);
     await GET(makeRequest("test-cron-secret"));
 
     expect(mockPrisma.offer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          status: "pending",
-          expiresAt: { lt: expect.any(Date) },
+          OR: [
+            { status: "pending", expiresAt: { lt: expect.any(Date) } },
+            { status: "accepted", updatedAt: { lt: expect.any(Date) } },
+          ],
         },
         select: {
           id: true,
+          status: true,
           paymentIntentId: true,
           buyerId: true,
           listingId: true,

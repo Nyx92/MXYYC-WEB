@@ -78,10 +78,10 @@ export default async function CardDetailPage(
   // /api/cards/[id] returns (both call getCardDetailForViewer) — passed
   // straight to the client component so the first paint already has the
   // real card, instead of a spinner followed by a client-side fetch for
-  // data the server already had. The client component still re-fetches on
-  // its own for a client-side navigation to a sibling /cards/[id] (Next.js
-  // reuses this page's component instance rather than remounting it), since
-  // this server fetch only ever runs for the id in the initial request.
+  // data the server already had. Keyed by id so a client-side navigation to
+  // a sibling /cards/[id] remounts it (Next.js would otherwise reuse the
+  // instance) and no per-card state — auction, offers, open dialogs — leaks
+  // from the previous card.
   const session = await getServerSession(authOptions);
   const card = await getCardDetailForViewer(prisma, params.id, session?.user?.id);
 
@@ -110,11 +110,13 @@ export default async function CardDetailPage(
       {jsonLd && (
         <script
           type="application/ld+json"
-          // JSON.stringify of server-fetched, non-HTML data — not raw user input.
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+          // JSON.stringify doesn't escape "<", so a "</script>" inside a
+          // catalog title/description (admin- or feed-supplied) would end
+          // this tag early. \u003c keeps the JSON identical but inert.
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }}
         />
       )}
-      <CardDetailClient initialCard={card} />
+      <CardDetailClient key={params.id} initialCard={card} />
     </>
   );
 }

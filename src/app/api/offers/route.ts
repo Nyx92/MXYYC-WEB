@@ -7,6 +7,8 @@ import { centsToDollars, dollarsToCents } from "@/lib/money";
 import { notifyAsync } from "@/lib/notifications";
 import { verifyPaymentIntentAmountOrRespond } from "@/lib/paymentIntentGuard";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
+import { rateLimitResponse } from "@/lib/rateLimit";
+import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -20,8 +22,10 @@ const OFFER_EXPIRY_HOURS = 24;
 // when Card became Listing), but the wire format this route has always used
 // stays `cardId` — this rebuilds a raw offer row's price + card fields for
 // the client without ever leaking the internal `listingId` name.
+// `paymentIntentId` is dropped: sellers read this endpoint, and a buyer's PI
+// id must never reach anyone who could try to attach it elsewhere.
 function serializeOffer(offer: any) {
-  const { listingId, price, listing, ...rest } = offer;
+  const { listingId, price, listing, paymentIntentId, ...rest } = offer;
   return {
     ...rest,
     cardId: listingId,
@@ -77,7 +81,9 @@ export async function GET(req: NextRequest) {
       const offers = await prisma.offer.findMany({
         where: { listingId: cardId, archivedAt: null },
         include: {
-          buyer: { select: { id: true, username: true, email: true } },
+          // No email: counterparties never need each other's contact
+          // details (the shop handles pickup), and usernames always exist.
+          buyer: { select: { id: true, username: true } },
         },
         orderBy: { createdAt: "desc" },
       });
@@ -96,7 +102,7 @@ export async function GET(req: NextRequest) {
               imageUrls: true,
               condition: true,
               forSale: true,
-              owner: { select: { id: true, username: true, email: true } },
+              owner: { select: { id: true, username: true } },
               ...listingCatalogInclude,
             },
           },
@@ -190,6 +196,16 @@ export async function POST(req: NextRequest) {
   }
   const buyerId = session.user.id;
 
+  // 🔒 Same per-user bucket rationale as POST /api/offers/payment-intent —
+  // this route calls Stripe (retrieve/cancel).
+  const limited = rateLimitResponse(`offer:${buyerId}`, { limit: 20, windowMs: 60 * 1000 });
+  if (limited) return limited;
+
+  // 🔒 Re-checked here, not only at PI creation — this is the route that
+  // commits the offer. See src/lib/purchaseVerification.ts.
+  const verificationError = await requireVerifiedForPurchase(buyerId);
+  if (verificationError) return verificationError;
+
   try {
     const { cardId, price, message, paymentIntentId } = await req.json();
 
@@ -248,9 +264,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Safety: ensure this PI was created for this buyer (metadata check).
-    if (pi.metadata?.buyerId && pi.metadata.buyerId !== buyerId) {
+    // Safety: ensure this PI was created for this buyer AND this card by
+    // POST /api/offers/payment-intent. Must be an exact match — a PI with no
+    // buyerId (e.g. an auction bid PI) is not this buyer's offer hold, and
+    // the amount guard below would otherwise cancel it.
+    if (pi.metadata?.buyerId !== buyerId || pi.metadata?.cardId !== cardId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    // A PI backs exactly one offer. A double-click / client retry re-sends
+    // the PI already stored on this buyer's pending offer — answer it
+    // idempotently, before anything below can cancel that live hold.
+    const alreadyUsed = await prisma.offer.findFirst({ where: { paymentIntentId } });
+    if (alreadyUsed) {
+      if (alreadyUsed.buyerId === buyerId && alreadyUsed.status === "pending") {
+        return NextResponse.json({ offer: serializeOffer(alreadyUsed), amended: false });
+      }
+      return NextResponse.json(
+        { error: "This payment authorisation has already been used" },
+        { status: 409 }
+      );
     }
 
     const priceInCents = dollarsToCents(Number(price));
@@ -301,6 +334,31 @@ export async function POST(req: NextRequest) {
     if (existing?.status === "pending") {
       // The buyer is changing their offer. Cancel the OLD PaymentIntent first
       // so the previous hold on their card is released. Then save the new PI.
+      //
+      // The swap is conditional on the offer still being pending with the PI
+      // we read: if the seller accepted/rejected it in the meantime, nothing
+      // is overwritten and the buyer's NEW hold is released instead.
+      const amendData = {
+        price: priceInCents,
+        message: cleanMessage,
+        // Replace old PI with the new one
+        paymentIntentId,
+        // Reset the 24h expiry window from now
+        expiresAt: new Date(Date.now() + OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
+      };
+      const swapped = await prisma.offer.updateMany({
+        where: { id: existing.id, status: "pending", paymentIntentId: existing.paymentIntentId },
+        data: amendData,
+      });
+      if (swapped.count !== 1) {
+        await stripe.paymentIntents.cancel(paymentIntentId).catch(() => {});
+        return NextResponse.json(
+          { error: "Your offer changed while you were updating it. Please refresh and try again." },
+          { status: 409 }
+        );
+      }
+      const updated = { ...existing, ...amendData };
+
       if (existing.paymentIntentId) {
         try {
           await stripe.paymentIntents.cancel(existing.paymentIntentId);
@@ -313,18 +371,6 @@ export async function POST(req: NextRequest) {
           );
         }
       }
-
-      const updated = await prisma.offer.update({
-        where: { id: existing.id },
-        data: {
-          price: priceInCents,
-          message: cleanMessage,
-          // Replace old PI with the new one
-          paymentIntentId,
-          // Reset the 24h expiry window from now
-          expiresAt: new Date(Date.now() + OFFER_EXPIRY_HOURS * 60 * 60 * 1000),
-        },
-      });
 
       // Notify the seller that the buyer revised their offer with a new price.
       // Fire-and-forget — never blocks the response.
@@ -377,6 +423,14 @@ export async function POST(req: NextRequest) {
       { status: 201 }
     );
   } catch (err) {
+    // Unique index on Offer.paymentIntentId: a simultaneous copy of this
+    // request already stored this PI on an offer.
+    if ((err as { code?: string })?.code === "P2002") {
+      return NextResponse.json(
+        { error: "This payment authorisation has already been used" },
+        { status: 409 }
+      );
+    }
     console.error("[offers POST] error:", err);
     return NextResponse.json(
       { error: "Failed to place offer" },

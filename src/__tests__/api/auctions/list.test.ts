@@ -248,14 +248,14 @@ describe("GET /api/auctions", () => {
     mockPrisma.auction.findMany.mockResolvedValue([]);
     await GET(getReq("?sort=priceLow"));
     const call = mockPrisma.auction.findMany.mock.calls[0][0];
-    expect(call.orderBy).toEqual([{ currentBid: "asc" }, { startingBid: "asc" }]);
+    expect(call.orderBy).toEqual([{ currentBid: { sort: "asc", nulls: "last" } }, { startingBid: "asc" }]);
   });
 
   it("browse: sort=priceHigh orders by currentBid then startingBid descending", async () => {
     mockPrisma.auction.findMany.mockResolvedValue([]);
     await GET(getReq("?sort=priceHigh"));
     const call = mockPrisma.auction.findMany.mock.calls[0][0];
-    expect(call.orderBy).toEqual([{ currentBid: "desc" }, { startingBid: "desc" }]);
+    expect(call.orderBy).toEqual([{ currentBid: { sort: "desc", nulls: "last" } }, { startingBid: "desc" }]);
   });
 
   // ── Facet filters (through the linked listing) ────────────────────────────

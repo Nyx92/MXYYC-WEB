@@ -93,7 +93,7 @@ describe("GET /api/admin/collection-requests", () => {
         requestedAt: new Date(), packedAt: null,
         user: { id: "user-1", username: "ash", firstName: "Ash", lastName: "Ketchum", email: "ash@example.com" },
         listings: [{
-          id: "l1", condition: "NM",
+          id: "l1", condition: "NM", ownerId: "user-1",
           pokemonCard: { nameEn: "Pikachu", rarity: "Common", setNameEn: "Base Set", language: "English", localId: "25", tcgPlayerId: "tcg-1" },
           riftboundCard: null,
         }],
@@ -105,6 +105,23 @@ describe("GET /api/admin/collection-requests", () => {
 
     expect(body.requests[0].customer.username).toBe("ash");
     expect(body.requests[0].cards[0].title).toBe("Pikachu");
+  });
+
+  it("omits cards the customer no longer owns (e.g. sold after being attached)", async () => {
+    mockPrisma.collectionRequest.findMany.mockResolvedValue([
+      {
+        id: "req-1", requestRef: "PU-2609-AAAA", status: "REQUESTED",
+        requestedAt: new Date(), packedAt: null,
+        user: { id: "user-1", username: "ash", firstName: "Ash", lastName: "Ketchum", email: "ash@example.com" },
+        listings: [{
+          id: "l1", condition: "NM", ownerId: "buyer-9",
+          pokemonCard: { nameEn: "Pikachu", rarity: "Common", setNameEn: "Base Set", language: "English", localId: "25", tcgPlayerId: "tcg-1" },
+          riftboundCard: null,
+        }],
+      },
+    ]);
+    const body = await (await GET(new Request("http://localhost/api/admin/collection-requests"))).json();
+    expect(body.requests[0].cards).toEqual([]);
   });
 
   it("returns 500 on a DB error", async () => {

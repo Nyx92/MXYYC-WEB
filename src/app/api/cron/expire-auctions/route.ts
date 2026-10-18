@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { settleAuction, cancelBidPI } from "@/lib/auctionSettlement";
+import { settleAuction, expireAuction } from "@/lib/auctionSettlement";
 import { notifyAsync } from "@/lib/notifications";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
 
@@ -89,17 +89,9 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
 
       // ── 1a. No bids — expire immediately ──────────────────────────────────
       if (!topBid) {
-        // 1. Expire the auction and release the card lock atomically.
-        await prisma.$transaction([
-          prisma.auction.update({
-            where: { id: auction.id },
-            data:  { status: "expired" },
-          }),
-          prisma.listing.update({
-            where: { id: auction.listing.id },
-            data:  { inAuction: false },
-          }),
-        ]);
+        // 1. Expire the auction and release the card lock atomically
+        //    (conditional on still being "active").
+        if (!(await expireAuction(auction.id, auction.listing.id, "active"))) continue;
 
         // 2. Notify the seller — fire-and-forget (does not block the loop).
         notifyAsync({
@@ -127,12 +119,15 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
       // 1. Compute the 24-hour deadline from now.
       const deadline = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-      // 2. Flip auction to pending_seller_decision and record the deadline.
-      //    listing.inAuction stays true — the card remains locked until seller decides.
-      await prisma.auction.update({
-        where: { id: auction.id },
+      // 2. Flip auction to pending_seller_decision and record the deadline —
+      //    only if still "active", so a buy-out that settled concurrently is
+      //    never flipped back. listing.inAuction stays true — the card remains
+      //    locked until seller decides.
+      const flipped = await prisma.auction.updateMany({
+        where: { id: auction.id, status: "active" },
         data:  { status: "pending_seller_decision", sellerDecisionDeadline: deadline },
       });
+      if (flipped.count !== 1) continue;
 
       // 3. Notify the seller to accept or decline — fire-and-forget.
       notifyAsync({
@@ -178,26 +173,15 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
       const topBid = auction.bids[0];
 
       if (topBid) {
-        // 1. Cancel the Stripe PI — releases the buyer's held funds (fire-and-forget).
-        cancelBidPI(topBid.paymentIntentId);
+        // 1. Cancel bid, expire auction, and release card lock atomically —
+        //    conditional on still awaiting a decision, so a seller accept
+        //    that settled concurrently is never flipped back to "expired".
+        //    expireAuction also cancels the bid and releases its PI hold.
+        if (!(await expireAuction(auction.id, auction.listing.id, "pending_seller_decision"))) {
+          continue;
+        }
 
-        // 2. Cancel bid, expire auction, and release card lock atomically.
-        await prisma.$transaction([
-          prisma.bid.update({
-            where: { id: topBid.id },
-            data:  { status: "cancelled" },
-          }),
-          prisma.auction.update({
-            where: { id: auction.id },
-            data:  { status: "expired" },
-          }),
-          prisma.listing.update({
-            where: { id: auction.listing.id },
-            data:  { inAuction: false },
-          }),
-        ]);
-
-        // 3. Notify the bidder their hold is released — fire-and-forget.
+        // 2. Notify the bidder their hold is released — fire-and-forget.
         //    Note: seller is not notified here (they chose not to respond).
         notifyAsync({
           userId: topBid.bidderId,
@@ -209,16 +193,7 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
       } else {
         // Edge case: no active bid found (e.g. bid was already cancelled externally).
         // 1. Expire the auction and release the card lock.
-        await prisma.$transaction([
-          prisma.auction.update({
-            where: { id: auction.id },
-            data:  { status: "expired" },
-          }),
-          prisma.listing.update({
-            where: { id: auction.listing.id },
-            data:  { inAuction: false },
-          }),
-        ]);
+        if (!(await expireAuction(auction.id, auction.listing.id, "pending_seller_decision"))) continue;
       }
 
       results.expiredDecisionTimeout++;

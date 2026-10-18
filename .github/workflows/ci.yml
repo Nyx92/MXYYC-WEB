@@ -52,3 +52,11 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
           SUPABASE_URL: https://fake.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: fake-service-role-key
+          RESEND_API_KEY: re_test_fake
+
+      # 6. Type-check and lint (no env needed — nothing is executed)
+      - name: Type-check
+        run: pnpm exec tsc --noEmit
+
+      - name: Lint
+        run: pnpm lint

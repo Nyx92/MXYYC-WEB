@@ -1,43 +1,33 @@
-# When you run docker build -t my-app, Docker looks for a file named Dockerfile in the current directory (.) and executes the instructions in the file sequentially to build your image. 
+# Next.js 16 requires Node >= 20.9.
+FROM node:22-slim
 
-# Use an official Node.js runtime as a parent image
-# FROM: Specifies the base image to use for the container.
-# node:18: Pulls the official Node.js Docker image with version 18. This image comes with Node.js and NPM pre-installed.
-FROM node:18-slim
-
-# Install necessary dependencies for LibreOffice and other potential needs
-# Combining the RUN instructions is generally better
+# openssl: Prisma's query engine needs libssl, which -slim images omit.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libreoffice-writer \
-    libreoffice-impress \
-    libreoffice-base \
-    libreoffice-common \
-    fonts-freefont-ttf
+    apt-get install -y --no-install-recommends openssl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory inside the container
-# WORKDIR: Sets the current working directory inside the container to /usr/src/app.
-WORKDIR /usr/src/app
+# pnpm via corepack (version pinned by package.json "packageManager").
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
 
-# Copy package.json and package-lock.json first (to cache dependencies)
-# If you copy everything at once (COPY . .), Docker will invalidate the cache every time you change a single file in your app, and npm install will run unnecessarily.
-COPY package*.json ./
+# Build and run as the unprivileged `node` user; it must own the app dir
+# because `next start` writes to .next/cache at runtime.
+WORKDIR /app
+RUN chown node:node /app
+USER node
 
-# Install app dependencies
-RUN npm install --frozen-lockfile
+# Dependencies first for layer caching. prisma/ is needed here because the
+# postinstall script runs `prisma generate`.
+COPY --chown=node:node package.json pnpm-lock.yaml .npmrc ./
+COPY --chown=node:node prisma ./prisma
+RUN pnpm install --frozen-lockfile
 
-# Copy the rest of your application code
-COPY . .
+COPY --chown=node:node . .
 
-# Build your Next.js application for production (even for local testing, this is a good practice)
-RUN npm run build
+# Note: src/lib/env.ts validates required env vars at import time, so the
+# build environment must provide them (e.g. via --build-arg / build secrets).
+RUN pnpm build
 
-# Expose the port your app runs on
-EXPOSE 3000
-
-# Set the PORT environment variable and start the application
 ENV PORT=3000
-
-# Command to start your Next.js application in production mode
-# We'll use 'start' instead of 'dev' for a more production-like local test
-CMD ["npm", "start"]
+EXPOSE 3000
+CMD ["pnpm", "exec", "next", "start", "-p", "3000"]

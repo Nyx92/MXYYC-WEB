@@ -19,7 +19,6 @@ export const MAX_PAGE_SIZE = 100;
 export const MAX_IDS = 200;
 
 export interface ListingsQueryParams {
-  forSale?: boolean;
   tcgPlayerId?: string | null;
   game?: "POKEMON" | "RIFTBOUND" | null;
   setNames?: string[];
@@ -71,8 +70,8 @@ function mapListing(listing: ListingWithRelations) {
     game: withDisplay.game as "POKEMON" | "RIFTBOUND",
     // CardItem.status has no backing column on Listing — nothing in this
     // schema ever marks a listing "sold" (ownership/forSale simply doesn't
-    // change on purchase today) or "reserved" outside the
-    // reservedBy/reservedUntil fields already exposed via `...withDisplay`.
+    // change on purchase today) or "reserved" (the reservation columns are
+    // deliberately stripped from this public shape — see withListingDisplay).
     // "available" is a safe, behavior-preserving default: every consumer
     // that reads `.status` only ever compares it against "sold"
     // (CardMarketChart.tsx, cards/[id]/page.tsx), which this still fails,
@@ -89,11 +88,9 @@ function mapListing(listing: ListingWithRelations) {
     // initial server-rendered page.
     createdAt: withDisplay.createdAt.toISOString(),
     updatedAt: withDisplay.updatedAt.toISOString(),
-    // Same ISO-string conversion as createdAt/updatedAt above — nothing
-    // reads this field today, but leaving it as a live Date object here
-    // (while every other Date field on this shape is converted) would be
-    // an inconsistency waiting to bite the first future consumer.
-    reservedUntil: withDisplay.reservedUntil != null ? withDisplay.reservedUntil.toISOString() : null,
+    // Public endpoint — which pickup request a card is in is the owner's
+    // business only (GET /api/user/cards exposes it to them).
+    collectionRequestId: undefined,
   };
 }
 
@@ -148,13 +145,15 @@ export function buildCatalogFacetClauses(params: {
 
 export async function getListingsPage(params: ListingsQueryParams): Promise<ListingsPageResult> {
   const {
-    forSale, tcgPlayerId, game,
+    tcgPlayerId, game,
     setNames = [], rarities = [], types = [], languages = [], conditions = [], ids = [],
     page = null, pageSize = null,
   } = params;
 
-  const and: Prisma.ListingWhereInput[] = [];
-  if (forSale === true) and.push({ forSale: true });
+  // Always for-sale only: this backs public endpoints (GET /api/cards, the
+  // marketplace page). Without it anyone could page through every user's
+  // private, not-for-sale (even already-collected) collection.
+  const and: Prisma.ListingWhereInput[] = [{ forSale: true }];
   if (tcgPlayerId) {
     and.push({
       OR: [

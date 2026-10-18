@@ -257,6 +257,16 @@ describe("pickPricedVariants", () => {
     expect(picks.map((p) => p.label)).toEqual(["PSA 10", "CGC 9.5", "BECKETT 9"]);
   });
 
+  it("keeps only the first variant per label so one day never gets duplicate rows", () => {
+    const variants = [
+      { type: "graded" as const, condition: null, grading: { company: "PSA", grade: 10 }, markets: [{ currency: "USD", price: 300 }] },
+      { type: "graded" as const, condition: null, grading: { company: "psa", grade: 10 }, markets: [{ currency: "USD", price: 999 }] },
+    ];
+    const picks = pickPricedVariants(variants);
+    expect(picks).toHaveLength(1);
+    expect(picks[0].variant.markets[0].price).toBe(300);
+  });
+
   it("skips a graded variant it can't attribute to a known company", () => {
     const variants = [
       { type: "graded" as const, condition: null, grading: { company: "SGC", grade: 9 }, markets: [{ currency: "USD", price: 50 }] },

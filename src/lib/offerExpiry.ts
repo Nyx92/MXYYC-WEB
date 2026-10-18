@@ -29,6 +29,7 @@ export async function expireOffer(offer: {
   paymentIntentId: string | null;
 }) {
   // ── Step 1: Cancel the Stripe PaymentIntent ───────────────────────────────
+  let capturedWithoutSale = false;
   if (offer.paymentIntentId) {
     try {
       await stripe.paymentIntents.cancel(offer.paymentIntentId);
@@ -43,6 +44,11 @@ export async function expireOffer(offer: {
           "[offerExpiry] PI already in terminal state, skipping cancel:",
           offer.paymentIntentId
         );
+        // "Terminal" includes captured. A still-pending offer whose PI was
+        // captured means the buyer paid and never got the card — refunded
+        // below, but only if this call is the one that expires the offer.
+        const pi = await stripe.paymentIntents.retrieve(offer.paymentIntentId);
+        capturedWithoutSale = pi?.status === "succeeded";
       } else {
         // Unexpected error (network failure, Stripe outage, etc.).
         // Re-throw so the DB update below does NOT run.
@@ -60,8 +66,40 @@ export async function expireOffer(offer: {
   }
 
   // ── Step 2: Mark offer as expired in DB ───────────────────────────────────
-  await prisma.offer.update({
-    where: { id: offer.id },
+  // Conditional on still being pending: if the seller accepted concurrently
+  // (the cancel above then hits a captured PI), a blind update would flip a
+  // paid offer to "expired" and hide the sale.
+  const { count } = await prisma.offer.updateMany({
+    where: { id: offer.id, status: "pending" },
+    data: { status: "expired" },
+  });
+  if (count === 1 && capturedWithoutSale && offer.paymentIntentId) {
+    await stripe.refunds.create({ payment_intent: offer.paymentIntentId });
+  }
+}
+
+/**
+ * recoverStuckAcceptedOffer — PATCH /api/offers/[id] briefly moves an offer
+ * to "accepted" while it captures. If that request dies between the claim
+ * and its own capture/revert, the offer would stay "accepted" forever (expiry
+ * only handles "pending") with the buyer's funds held or charged. The
+ * expire-offers cron calls this for offers stuck in "accepted": it releases
+ * an uncaptured hold or refunds a captured one, then closes the offer.
+ */
+export async function recoverStuckAcceptedOffer(offer: {
+  id: string;
+  paymentIntentId: string | null;
+}) {
+  if (offer.paymentIntentId) {
+    const pi = await stripe.paymentIntents.retrieve(offer.paymentIntentId);
+    if (pi.status === "requires_capture") {
+      await stripe.paymentIntents.cancel(offer.paymentIntentId);
+    } else if (pi.status === "succeeded") {
+      await stripe.refunds.create({ payment_intent: offer.paymentIntentId });
+    }
+  }
+  await prisma.offer.updateMany({
+    where: { id: offer.id, status: "accepted" },
     data: { status: "expired" },
   });
 }

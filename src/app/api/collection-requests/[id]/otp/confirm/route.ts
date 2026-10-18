@@ -51,6 +51,10 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     if (request.status === "COLLECTED") {
       return NextResponse.json({ error: "This pickup has already been collected" }, { status: 409 });
     }
+    // A top-up reverts PACKED → REQUESTED; the new cards aren't bagged yet.
+    if (request.status !== "PACKED") {
+      return NextResponse.json({ error: "This pickup isn't packed yet" }, { status: 409 });
+    }
     if (!request.pickupCodeHash || !request.pickupCodeExpiresAt) {
       return NextResponse.json({ error: "No verification code was requested" }, { status: 400 });
     }
@@ -73,9 +77,12 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     }
 
     const collectedAt = new Date();
-    await prisma.$transaction([
-      prisma.collectionRequest.update({
-        where: { id: request.id },
+    // Interactive (not array) transaction so a lost race can abort before any
+    // card is stamped: the request flips to COLLECTED only if it's still
+    // PACKED — a concurrent top-up (which reverts it to REQUESTED) wins.
+    const collected = await prisma.$transaction(async (tx) => {
+      const transitioned = await tx.collectionRequest.updateMany({
+        where: { id: request.id, status: "PACKED" },
         data: {
           status: "COLLECTED",
           collectedAt,
@@ -83,12 +90,22 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
           pickupCodeExpiresAt: null,
           pickupCodeAttempts: 0,
         },
-      }),
-      prisma.listing.updateMany({
-        where: { collectionRequestId: request.id },
+      });
+      if (transitioned.count === 0) return false;
+      // Only cards the customer still owns — never stamp (hide) a card that
+      // has since been transferred to someone else.
+      await tx.listing.updateMany({
+        where: { collectionRequestId: request.id, ownerId: request.userId },
         data: { collectedAt },
-      }),
-    ]);
+      });
+      return true;
+    });
+    if (!collected) {
+      return NextResponse.json(
+        { error: "This pickup changed — please refresh and try again" },
+        { status: 409 }
+      );
+    }
 
     return NextResponse.json({ message: "Pickup confirmed — enjoy your cards!" });
   } catch (err) {

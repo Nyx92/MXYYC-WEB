@@ -18,13 +18,14 @@ const mockPrisma = vi.hoisted(() => ({
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 
 const mockBcryptHash = vi.hoisted(() => vi.fn().mockResolvedValue("hashed-password"));
+const mockBcryptCompare = vi.hoisted(() => vi.fn().mockResolvedValue(false));
 
 // ── STEP 2: Register fakes ────────────────────────────────────────────────────
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
-vi.mock("bcryptjs", () => ({ default: { hash: mockBcryptHash } }));
+vi.mock("bcryptjs", () => ({ default: { hash: mockBcryptHash, compare: mockBcryptCompare } }));
 
 // ── STEP 3: Import code under test ────────────────────────────────────────────
 
@@ -101,6 +102,32 @@ describe("POST /api/user (signup)", () => {
         }),
       })
     );
+  });
+
+  it("stores the email trimmed and lowercased", async () => {
+    mockPrisma.user.create.mockResolvedValue({ id: "user-1" });
+    await POST(postRequest({ ...VALID_SIGNUP, email: " Ash@Example.COM " }));
+    expect(mockPrisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ email: "ash@example.com" }) })
+    );
+  });
+
+  it("stores the phone number normalized to E.164 (form sends digits only)", async () => {
+    mockPrisma.user.create.mockResolvedValue({ id: "user-1" });
+    const res = await POST(postRequest({ ...VALID_SIGNUP, phoneNumber: "6591234567" }));
+    expect(res.status).toBe(201);
+    expect(mockPrisma.user.create.mock.calls.at(-1)![0].data.phoneNumber).toBe("+6591234567");
+  });
+
+  it("returns 400 for an invalid phone number", async () => {
+    const res = await POST(postRequest({ ...VALID_SIGNUP, phoneNumber: "abc" }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for a non-string (numeric) phone number", async () => {
+    const res = await POST(postRequest({ ...VALID_SIGNUP, phoneNumber: 6591234567 }));
+    expect(res.status).toBe(400);
+    expect(mockPrisma.user.create).not.toHaveBeenCalled();
   });
 
   it("returns 400 when email or password is missing", async () => {
@@ -199,6 +226,49 @@ describe("PUT /api/user (profile update)", () => {
     expect(body.user.email).toBe("new@example.com");
   });
 
+  describe("email change on a credentials account", () => {
+    beforeEach(() => {
+      mockPrisma.user.findUnique.mockResolvedValue({ email: "old@example.com", password: "stored-hash" });
+      mockPrisma.user.update.mockClear();
+    });
+
+    it("returns 403 without the current password", async () => {
+      const res = await PUT(putRequest({ email: "attacker@example.com" }));
+      expect(res.status).toBe(403);
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 with a wrong current password", async () => {
+      mockBcryptCompare.mockResolvedValueOnce(false);
+      const res = await PUT(putRequest({ email: "attacker@example.com", currentPassword: "nope" }));
+      expect(res.status).toBe(403);
+      expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("allows the change with the correct current password", async () => {
+      mockBcryptCompare.mockResolvedValueOnce(true);
+      mockPrisma.user.update.mockResolvedValue({ id: "user-1", email: "new@example.com" });
+      const res = await PUT(putRequest({ email: "new@example.com", currentPassword: "right" }));
+      expect(res.status).toBe(200);
+      expect(mockBcryptCompare).toHaveBeenCalledWith("right", "stored-hash");
+    });
+
+    it("treats a case-only difference from a legacy mixed-case email as unchanged", async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ email: "Old@Example.com", password: "stored-hash" });
+      mockPrisma.user.update.mockResolvedValue({ id: "user-1", email: "old@example.com" });
+      const res = await PUT(putRequest({ email: "OLD@example.com", firstName: "Ash" }));
+      expect(res.status).toBe(200);
+      expect(mockBcryptCompare).not.toHaveBeenCalled();
+      expect(mockPrisma.user.update.mock.calls[0][0].data.email).toBe("old@example.com");
+    });
+
+    it("does not ask for a password when the email is unchanged", async () => {
+      mockPrisma.user.update.mockResolvedValue({ id: "user-1", email: "old@example.com" });
+      const res = await PUT(putRequest({ email: "old@example.com", firstName: "Ash" }));
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("returns 409 when the new email is already in use (P2002)", async () => {
     mockPrisma.user.update.mockRejectedValue({ code: "P2002" });
 
@@ -206,6 +276,13 @@ describe("PUT /api/user (profile update)", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toMatch(/email/i);
+  });
+
+  it("returns 409 naming the username when the username is taken (P2002 on username)", async () => {
+    mockPrisma.user.update.mockRejectedValue({ code: "P2002", meta: { target: ["username"] } });
+    const res = await PUT(putRequest({ email: "old@example.com", username: "taken" }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/username/i);
   });
 
   it("returns 500 on an unexpected error", async () => {

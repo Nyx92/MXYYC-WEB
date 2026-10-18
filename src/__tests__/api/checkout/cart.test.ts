@@ -38,6 +38,8 @@ const mockStripe = vi.hoisted(() =>
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
 vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
+const mockRateLimitResponse = vi.hoisted(() => vi.fn((): Response | null => null));
+vi.mock("@/lib/rateLimit", () => ({ rateLimitResponse: mockRateLimitResponse }));
 vi.mock("stripe", () => ({ default: mockStripe }));
 
 // ── STEP 3: Import code under test ────────────────────────────────────────────
@@ -84,6 +86,14 @@ function makeRequest() {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("POST /api/checkout/cart", () => {
+  it("returns 429 when the per-user checkout rate limit is exceeded", async () => {
+    mockGetServerSession.mockResolvedValue({ user: { id: "buyer-1" } });
+    mockRateLimitResponse.mockReturnValueOnce(new Response(null, { status: 429 }));
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(429);
+    expect(mockRateLimitResponse).toHaveBeenCalledWith("checkout:buyer-1", expect.any(Object), expect.any(String));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetServerSession.mockResolvedValue(SESSION);

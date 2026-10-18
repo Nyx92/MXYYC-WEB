@@ -12,7 +12,7 @@ import { NextRequest } from "next/server";
  *   c) bid < RP (or no RP) → pending_seller_decision + 24h deadline + notify seller
  *
  * Pass 2 — pending_seller_decision auctions whose deadline has passed:
- *   → cancelBidPI, expire auction+card, notify bidder
+ *   → expireAuction (conditional claim; cancels bids + PIs itself), notify bidder
  */
 
 // ── STEP 1: Create the mock objects ──────────────────────────────────────────
@@ -20,16 +20,12 @@ import { NextRequest } from "next/server";
 const mockPrisma = vi.hoisted(() => ({
   auction: {
     findMany: vi.fn(),
-    update:   vi.fn(),
     updateMany: vi.fn(),
   },
-  bid:  { update: vi.fn() },
-  listing: { update: vi.fn() },
-  $transaction: vi.fn(),
 }));
 
 const mockSettleAuction = vi.hoisted(() => vi.fn());
-const mockCancelBidPI   = vi.hoisted(() => vi.fn());
+const mockExpireAuction = vi.hoisted(() => vi.fn());
 
 // ── STEP 2: Register the fakes ────────────────────────────────────────────────
 
@@ -37,7 +33,7 @@ vi.mock("@/lib/prisma",   () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/notifications",     () => ({ notifyAsync: vi.fn() }));
 vi.mock("@/lib/auctionSettlement", () => ({
   settleAuction: mockSettleAuction,
-  cancelBidPI:   mockCancelBidPI,
+  expireAuction: mockExpireAuction,
 }));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
@@ -77,11 +73,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   process.env.CRON_SECRET = "cron-secret";
   mockSettleAuction.mockResolvedValue(undefined);
-  mockCancelBidPI.mockResolvedValue(undefined);
   // Default: no auctions to process in either pass
   mockPrisma.auction.findMany.mockResolvedValue([]);
-  mockPrisma.$transaction.mockResolvedValue([]);
-  mockPrisma.auction.update.mockResolvedValue({});
+  mockExpireAuction.mockResolvedValue(true); // default: expiry claim succeeds
+  mockPrisma.auction.updateMany.mockResolvedValue({ count: 1 }); // default: 1c flip succeeds
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -120,7 +115,7 @@ describe("GET /api/cron/expire-auctions", () => {
     expect(body.expiredNoBids).toBe(1);
     expect(body.settled).toBe(0);
 
-    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(mockExpireAuction).toHaveBeenCalledWith("auction-1", "card-1", "active");
 
     expect(notifyAsync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -165,9 +160,9 @@ describe("GET /api/cron/expire-auctions", () => {
     expect(body.pendingDecision).toBe(1);
     expect(mockSettleAuction).not.toHaveBeenCalled();
 
-    expect(mockPrisma.auction.update).toHaveBeenCalledWith(
+    expect(mockPrisma.auction.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "auction-1" },
+        where: { id: "auction-1", status: "active" },
         data:  expect.objectContaining({ status: "pending_seller_decision" }),
       })
     );
@@ -193,6 +188,23 @@ describe("GET /api/cron/expire-auctions", () => {
     expect(mockSettleAuction).not.toHaveBeenCalled();
   });
 
+  it("Pass 1c: skips the notification when the conditional flip matches 0 rows", async () => {
+    const auction = makeAuction({
+      reservePrice: 2000,
+      bids: [{ id: "bid-1", paymentIntentId: "pi_1", bidderId: "buyer-1", amount: 1000 }],
+    });
+    mockPrisma.auction.findMany
+      .mockResolvedValueOnce([auction])
+      .mockResolvedValueOnce([]);
+    // A buy-out settled concurrently — the auction is no longer "active".
+    mockPrisma.auction.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await GET(cronReq("cron-secret"));
+    const body = await res.json();
+    expect(body.pendingDecision).toBe(0);
+    expect(notifyAsync).not.toHaveBeenCalled();
+  });
+
   // ── Pass 2: decision timeout → expire ────────────────────────────────────
   it("Pass 2: cancels PI and expires auction when seller decision deadline passes", async () => {
     const auction = makeAuction({
@@ -208,12 +220,30 @@ describe("GET /api/cron/expire-auctions", () => {
     const body = await res.json();
     expect(body.expiredDecisionTimeout).toBe(1);
 
-    expect(mockCancelBidPI).toHaveBeenCalledWith("pi_expired");
-    expect(mockPrisma.$transaction).toHaveBeenCalled();
+    expect(mockExpireAuction).toHaveBeenCalledWith(
+      "auction-1", "card-1", "pending_seller_decision"
+    );
 
     expect(notifyAsync).toHaveBeenCalledWith(
       expect.objectContaining({ userId: "buyer-1", type: "auction_expired", cardId: "card-1" })
     );
+  });
+
+  it("Pass 2: does not notify when the expiry claim fails", async () => {
+    const auction = makeAuction({
+      bids: [{ id: "bid-1", paymentIntentId: "pi_expired", bidderId: "buyer-1" }],
+    });
+    mockPrisma.auction.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([auction]);
+    // The seller accepted (settled) concurrently — the claim loses.
+    mockExpireAuction.mockResolvedValue(false);
+
+    const res = await GET(cronReq("cron-secret"));
+    const body = await res.json();
+    expect(body.expiredDecisionTimeout).toBe(0);
+
+    expect(notifyAsync).not.toHaveBeenCalled();
   });
 
   // ── Resilience ────────────────────────────────────────────────────────────

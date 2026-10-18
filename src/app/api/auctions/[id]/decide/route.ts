@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { settleAuction, cancelBidPI } from "@/lib/auctionSettlement";
+import { settleAuction, expireAuction } from "@/lib/auctionSettlement";
 import { notifyAsync } from "@/lib/notifications";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
 
@@ -19,9 +19,10 @@ import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay"
  *
  * Reject flow:
  *   1. Verify auction state and deadline.
- *   2. Cancel highest bid PI (fire-and-forget).
- *   3. Mark auction "expired", clear Listing.inAuction.
- *   4. Notify bidder.
+ *   2. Conditionally claim the auction (pending_seller_decision → "expired"),
+ *      cancel its active bid(s) and clear Listing.inAuction — via
+ *      expireAuction(), which releases the PI holds only after the claim wins.
+ *   3. Notify bidder.
  *
  * Body: { action: "accept" | "reject" }
  */
@@ -93,26 +94,15 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     // REJECT — cancel PI, expire auction, release card
     // ══════════════════════════════════════════════════════════════════════════
 
-    // 3. Cancel the winning bid's PI (fire-and-forget).
-    cancelBidPI(highestBid.paymentIntentId);
+    // 3. Mark bid cancelled + auction expired + release the card — claimed
+    //    conditionally so a decline can't overwrite a concurrent settlement.
+    //    expireAuction also cancels the bid(s) and releases their PI holds.
+    const declined = await expireAuction(params.id, auction.listing.id, "pending_seller_decision");
+    if (!declined) {
+      return NextResponse.json({ error: "Auction is no longer awaiting a decision" }, { status: 409 });
+    }
 
-    // 4. Mark bid cancelled + auction expired + release the card in one transaction.
-    await prisma.$transaction([
-      prisma.bid.update({
-        where: { id: highestBid.id },
-        data:  { status: "cancelled" },
-      }),
-      prisma.auction.update({
-        where: { id: params.id },
-        data:  { status: "expired" },
-      }),
-      prisma.listing.update({
-        where: { id: auction.listing.id },
-        data:  { inAuction: false },
-      }),
-    ]);
-
-    // 5. Notify the bidder that the seller declined.
+    // 4. Notify the bidder that the seller declined.
     const listingTitle = withListingDisplay(auction.listing as any).title;
     notifyAsync({
       userId: highestBid.bidderId,

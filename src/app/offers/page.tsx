@@ -300,6 +300,12 @@ export default function OffersPage() {
                           )
                         )
                       }
+                      onStale={() =>
+                        fetch("/api/offers?received=true")
+                          .then((r) => r.json())
+                          .then((data) => { if (data.offers) setReceivedOffers(data.offers); })
+                          .catch(() => {})
+                      }
                     />
                   </motion.div>
                 ))}

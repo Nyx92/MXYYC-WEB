@@ -3,7 +3,7 @@
  * AuctionDialog — seller sets up and launches an auction on their card.
  *
  * Fields:
- *   - Duration (1–6 days, required)
+ *   - Duration (1–MAX_AUCTION_DAYS days, required)
  *   - Starting Bid (required, > $0)
  *   - Reserve Price (optional, >= startingBid)
  *   - Buy-out Price (optional, > reservePrice if both set)
@@ -32,6 +32,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { MAX_AUCTION_DAYS } from "@/constants/auctions";
 import GavelIcon from "@mui/icons-material/Gavel";
 
 interface AuctionDialogProps {
@@ -152,7 +153,7 @@ export default function AuctionDialog({
             onChange={(e) => setDurationDays(e.target.value)}
             disabled={loading}
           >
-            {[1, 2, 3, 4, 5, 6].map((d) => (
+            {Array.from({ length: MAX_AUCTION_DAYS }, (_, i) => i + 1).map((d) => (
               <MenuItem key={d} value={String(d)}>
                 {d} {d === 1 ? "day" : "days"}
               </MenuItem>

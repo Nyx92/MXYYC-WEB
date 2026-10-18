@@ -101,19 +101,42 @@ export async function POST(req: NextRequest) {
 
       const request = existing
         ? await tx.collectionRequest.update({
-            where: { id: existing.id },
+            // Conditional on the status we read: if a pickup confirm (or
+            // mark-packed) committed in between, this throws P2025 → 409
+            // instead of reopening a COLLECTED request.
+            where: { id: existing.id, status: existing.status },
             // Topping up an already-packed request means staff need to
             // re-pack it with the new items included.
-            data: existing.status === "PACKED" ? { status: "REQUESTED", packedAt: null } : {},
+            // Any pickup code issued for the old packed set dies with it.
+            data:
+              existing.status === "PACKED"
+                ? {
+                    status: "REQUESTED",
+                    packedAt: null,
+                    pickupCodeHash: null,
+                    pickupCodeExpiresAt: null,
+                    pickupCodeAttempts: 0,
+                  }
+                : {},
           })
         : await tx.collectionRequest.create({
             data: { requestRef: generateCollectionRef(), userId },
           });
 
-      await tx.listing.updateMany({
-        where: { id: { in: listingIds } },
+      // Re-checks ownership + eligibility under the row locks — the reads
+      // above can race a concurrent re-list/auction/sale of the same card.
+      const attached = await tx.listing.updateMany({
+        where: {
+          id: { in: listingIds },
+          ownerId: userId,
+          forSale: false,
+          inAuction: false,
+          collectionRequestId: null,
+          collectedAt: null,
+        },
         data: { collectionRequestId: request.id },
       });
+      if (attached.count !== listingIds.length) throw new Error("LISTING_NOT_ELIGIBLE");
 
       return { ...request, isTopUp: Boolean(existing) };
     });
@@ -128,16 +151,34 @@ export async function POST(req: NextRequest) {
       isTopUp: request.isTopUp,
     });
     if (messageId) {
-      await prisma.collectionRequest.update({
-        where: { id: request.id },
-        data: { discordMessageIds: { push: messageId } },
-      });
+      // The request is already committed — failing to record the alert id
+      // only means "packed" won't edit that message; never 500 over it.
+      try {
+        await prisma.collectionRequest.update({
+          where: { id: request.id },
+          data: { discordMessageIds: { push: messageId } },
+        });
+      } catch (err) {
+        console.error("[collection-requests] failed to store Discord message id:", err);
+      }
     }
 
     return NextResponse.json({
       request: { id: request.id, requestRef: request.requestRef, status: request.status },
     });
   } catch (err) {
+    if ((err as { code?: string })?.code === "P2025") {
+      return NextResponse.json(
+        { error: "Your pickup request just changed. Please refresh and try again." },
+        { status: 409 }
+      );
+    }
+    if (err instanceof Error && err.message === "LISTING_NOT_ELIGIBLE") {
+      return NextResponse.json(
+        { error: "One of your selected cards is no longer eligible for pickup" },
+        { status: 409 }
+      );
+    }
     console.error("[collection-requests] error:", err);
     return NextResponse.json({ error: "Something went wrong" }, { status: 500 });
   }

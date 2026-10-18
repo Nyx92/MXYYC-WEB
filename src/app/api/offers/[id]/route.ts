@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { expireOffer } from "@/lib/offerExpiry";
 import { notifyAsync } from "@/lib/notifications";
 import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
+import { listingLockableWhere } from "@/lib/collectionRequests";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -17,12 +18,14 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
  * Body: { action: "accept" | "reject" }
  *
  * ── Accept flow ────────────────────────────────────────────────────────────
- *   1. Retrieve the offer + its PaymentIntent ID.
+ *   1. Retrieve the offer + its PaymentIntent ID, then atomically claim it
+ *      (pending → accepted) so it can only be captured once.
  *   2. Capture the PaymentIntent via Stripe API.
  *      → Money moves from buyer to Stripe. No further action needed by buyer.
  *   3. Inside a DB transaction (atomic — all succeed or all roll back):
- *      a. Mark offer status → "accepted" (briefly, then "paid" below)
- *      b. Transfer card ownership to the buyer (ownerId = buyerId)
+ *      a. Conditionally transfer card ownership to the buyer — 0 rows (card
+ *         sold/locked concurrently) aborts the tx and refunds the buyer
+ *      b. Mark offer status → "paid"
  *      c. Mark card as no longer for sale (forSale = false)
  *      d. Archive ALL offers on this card (new owner shouldn't see old offers)
  *      e. Create a CardTransaction record to preserve the sale history
@@ -36,9 +39,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
  *   but the card wasn't transferred (or vice versa).
  *
  * ── Reject flow ────────────────────────────────────────────────────────────
- *   1. Cancel the PaymentIntent via Stripe API.
+ *   1. Conditionally mark offer status pending → "rejected".
+ *   2. Cancel the PaymentIntent via Stripe API.
  *      → Stripe releases the hold on the buyer's card. They are not charged.
- *   2. Mark offer status → "rejected".
  */
 export async function PATCH(req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -66,9 +69,10 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     if (!offer)
       return NextResponse.json({ error: "Offer not found" }, { status: 404 });
 
-    // Only the card owner (seller) can accept or reject — prevent other users
-    // from acting on offers that aren't on their card.
-    if (offer.listing.ownerId !== userId)
+    // Only the seller the offer was made to can act on it, and only while
+    // they still own the card — a later owner (e.g. an auction winner) must
+    // not be able to accept offers that were made to the previous owner.
+    if (offer.sellerId !== userId || offer.listing.ownerId !== userId)
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
     // Archived offers belong to a card that has already been sold — they are
@@ -155,15 +159,42 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
         );
       }
 
+      // ── 3c. Atomically claim the offer ────────────────────────────────────
+      // The checks above are plain reads. Flipping pending → accepted with a
+      // conditional write makes a double-click / concurrent accept of the
+      // same offer capture at most once.
+      const claim = await prisma.offer.updateMany({
+        where: { id: params.id, status: "pending", archivedAt: null, paymentIntentId: offer.paymentIntentId },
+        data: { status: "accepted" },
+      });
+      if (claim.count === 0) {
+        return NextResponse.json({ error: "Offer is not pending" }, { status: 409 });
+      }
+
       // ── 4. Capture the PaymentIntent ──────────────────────────────────────
       // This is the moment money moves. Stripe will charge the buyer's card
       // for the amount that was authorised when they placed the offer.
       // If capture fails (e.g. card issuer declined at capture time), we catch
       // the error and return 500 — the offer stays "pending" and the seller can
       // try again or the buyer can re-place the offer.
-      const captured = await stripe.paymentIntents.capture(
-        offer.paymentIntentId
-      );
+      let captured: Stripe.PaymentIntent;
+      try {
+        captured = await stripe.paymentIntents.capture(offer.paymentIntentId);
+      } catch (captureErr) {
+        // A failed call is ambiguous (e.g. a timeout after Stripe captured).
+        // If the money did move, carry on and transfer; only release the
+        // claim — so the seller can retry — when nothing was captured.
+        const pi = await stripe.paymentIntents.retrieve(offer.paymentIntentId);
+        if (pi.status === "succeeded") {
+          captured = pi;
+        } else {
+          await prisma.offer.updateMany({
+            where: { id: params.id, status: "accepted" },
+            data: { status: "pending" },
+          });
+          throw captureErr;
+        }
+      }
 
       // The PI should now be "succeeded" — just for logging/debugging.
       console.log(
@@ -176,6 +207,29 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
       let order: { id: string };
       try {
         const result = await prisma.$transaction(async (tx) => {
+          // 5-pre. Transfer card ownership to the buyer — conditionally.
+          //     Runs first so a lost race aborts before anything else is written.
+          //     The WHERE re-checks, under the row lock, that the seller still
+          //     owns the card and it is not in an auction, earmarked for
+          //     collection, or held by a live Buy Now reservation. A concurrent
+          //     accept of a *different* offer on the same card (or a webhook
+          //     transfer) makes this match 0 rows → throw → refund below.
+          //     - forSale = false, price = null, reservation fields cleared.
+          const transfer = await tx.listing.updateMany({
+            where: { id: listingId, ownerId: userId, ...listingLockableWhere() },
+            data: {
+              ownerId: offer.buyerId,
+              forSale: false,
+              price: null,
+              reservedById: null,
+              reservedUntil: null,
+              reservedCheckoutSessionId: null,
+            },
+          });
+          if (transfer.count !== 1) {
+            throw new Error("LISTING_NO_LONGER_AVAILABLE");
+          }
+
           // 5a. Create an Order record to represent this sale.
           //     This links the offer, buyer, seller, and amount for history/display.
           const order = await tx.order.create({
@@ -203,26 +257,13 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
           // 5c. Archive ALL offers on this card (pending, rejected, expired, etc.)
           //     The card is now sold — neither the new owner nor old buyers should
           //     see these in their active views. History is preserved via archivedAt.
+          //     expiresAt = now hands the other buyers' still-pending holds to
+          //     the next expire-offers cron run instead of keeping their funds
+          //     held for up to 24h on a sold card (the cron only touches
+          //     "pending" offers, so this one — now "paid" — is unaffected).
           await tx.offer.updateMany({
             where: { listingId, archivedAt: null },
-            data: { archivedAt: new Date() },
-          });
-
-          // 5d. Transfer card ownership to the buyer.
-          //     - ownerId changes to the buyer
-          //     - forSale = false (card is sold, shouldn't appear in marketplace)
-          //     - price = null (listing price is cleared — card has a new owner)
-          //     - Clear any reservation fields (no longer needed)
-          await tx.listing.update({
-            where: { id: listingId },
-            data: {
-              ownerId: offer.buyerId,
-              forSale: false,
-              price: null,
-              reservedById: null,
-              reservedUntil: null,
-              reservedCheckoutSessionId: null,
-            },
+            data: { archivedAt: new Date(), expiresAt: new Date() },
           });
 
           // 5e. Create a CardTransaction — permanent audit trail of who sold what,
@@ -262,6 +303,18 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
             refundErr
           );
         }
+        // The PI is now captured + refunded, so this offer can never be
+        // accepted again — close it out instead of leaving it "accepted".
+        await prisma.offer.updateMany({
+          where: { id: params.id, status: "accepted" },
+          data: { status: "rejected" },
+        });
+        if (txErr instanceof Error && txErr.message === "LISTING_NO_LONGER_AVAILABLE") {
+          return NextResponse.json(
+            { error: "This card is no longer available. The buyer has been refunded." },
+            { status: 409 }
+          );
+        }
         throw txErr;
       }
 
@@ -287,26 +340,33 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     // REJECT
     // ══════════════════════════════════════════════════════════════════════════
 
-    // ── 5. Cancel the PaymentIntent ───────────────────────────────────────────
+    // ── 5. Mark the offer as rejected in the DB ───────────────────────────────
+    // Claimed first, conditionally, so a reject racing an accept can never
+    // overwrite an offer that is being (or has been) captured.
+    const rejected = await prisma.offer.updateMany({
+      // Bound to the PI we read: if the buyer amended in between, this
+      // misses (409) instead of rejecting while leaving the new hold live.
+      where: { id: params.id, status: "pending", archivedAt: null, paymentIntentId: offer.paymentIntentId },
+      data: { status: "rejected" },
+    });
+    if (rejected.count === 0) {
+      return NextResponse.json({ error: "Offer is not pending" }, { status: 409 });
+    }
+
+    // ── 6. Cancel the PaymentIntent ───────────────────────────────────────────
     // This releases the hold on the buyer's card. No money moves.
     try {
       await stripe.paymentIntents.cancel(offer.paymentIntentId);
       console.log(`[offers PATCH] PI cancelled: ${offer.paymentIntentId}`);
     } catch (cancelErr) {
       // If the PI was already cancelled (e.g. expired, duplicate reject call),
-      // log and continue — we still want to update our DB status.
+      // log and continue — the offer is already rejected in our DB.
       console.warn(
         "[offers PATCH] Could not cancel PI (may already be cancelled):",
         offer.paymentIntentId,
         cancelErr
       );
     }
-
-    // ── 6. Mark the offer as rejected in the DB ───────────────────────────────
-    await prisma.offer.update({
-      where: { id: params.id },
-      data: { status: "rejected" },
-    });
 
     // Notify the buyer — fire-and-forget.
     notifyAsync({

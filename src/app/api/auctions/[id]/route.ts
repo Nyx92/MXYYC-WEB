@@ -23,12 +23,10 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
           },
         },
         bids: {
-          // Expose bids to authenticated viewers for history/transparency.
-          // PI ids are intentionally excluded — they are internal Stripe references.
-          select: {
-            id: true, bidderId: true, amount: true, status: true, createdAt: true,
-            bidder: { select: { id: true, username: true } },
-          },
+          // Public bid history: amounts/statuses only. Bidder identities are
+          // left out (this endpoint needs no login), and PI ids are internal
+          // Stripe references.
+          select: { id: true, amount: true, status: true, createdAt: true },
           orderBy: { amount: "desc" },
         },
         _count: { select: { bids: true } },
@@ -48,7 +46,6 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ id: stri
         reservePrice:   auction.reservePrice  != null ? centsToDollars(auction.reservePrice)  : null,
         buyOutPrice:    auction.buyOutPrice   != null ? centsToDollars(auction.buyOutPrice)   : null,
         currentBid:     auction.currentBid   != null ? centsToDollars(auction.currentBid)    : null,
-        highestBidderId: auction.highestBidderId,
         status:          auction.status,
         endsAt:          auction.endsAt.toISOString(),
         sellerDecisionDeadline: auction.sellerDecisionDeadline?.toISOString() ?? null,

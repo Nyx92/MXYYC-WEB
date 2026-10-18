@@ -9,12 +9,14 @@
  * Settlement mirrors the offer-accept flow in PATCH /api/offers/[id]:
  *   1. Capture the winning bid's PaymentIntent (money moves from buyer to platform).
  *   2. Atomic DB transaction:
+ *      0. Conditionally claim the auction (open → "sold"); losing the claim
+ *         to a concurrent settle/decline/expiry aborts and refunds
  *      a. Create Order record (sale history + amount)
  *      b. Create CardTransaction audit record (stripeEventId = PI id, same convention)
  *      c. Mark winning bid → "won"
  *      d. Mark all other active bids → "cancelled" (PI cancellations happen outside tx)
- *      e. Transfer card ownership (ownerId = winner, inAuction = false)
- *      f. Mark auction → "sold"
+ *      e. Transfer card ownership from the seller (ownerId = winner,
+ *         inAuction = false); 0 rows aborts and refunds
  *   3. If DB fails AFTER capture: issue a Stripe refund (compensating transaction)
  *      so the buyer is made whole.
  *   4. Cancel losing bidders' PIs (fire-and-forget, same pattern as expired offers).
@@ -61,20 +63,55 @@ export async function settleAuction(auctionId: string): Promise<void> {
   //    Capture first so the DB transaction can record the confirmed payment.
   //    If capture fails (issuer decline at capture time), we throw without
   //    touching the DB — auction stays in its current state for a retry.
-  const captured = await stripe.paymentIntents.capture(winningBid.paymentIntentId);
+  //    A failed capture call is ambiguous, so check where the PI really is:
+  //    already captured (an earlier attempt died before the DB tx) → carry
+  //    on and record the sale; cancelled (e.g. the ~7-day authorisation
+  //    lapsed) → the bid can never be paid, so expire the auction instead of
+  //    retrying a dead capture on every cron run.
+  let captured: Stripe.PaymentIntent;
+  try {
+    captured = await stripe.paymentIntents.capture(winningBid.paymentIntentId);
+  } catch (captureErr) {
+    const pi = await stripe.paymentIntents.retrieve(winningBid.paymentIntentId);
+    if (pi.status === "succeeded") {
+      captured = pi;
+    } else {
+      if (pi.status === "canceled") {
+        await expireAuction(auctionId, auction.listingId, auction.status as "active" | "pending_seller_decision");
+      }
+      throw captureErr;
+    }
+  }
   console.log(`[auctionSettlement] PI captured: ${captured.id} → ${captured.status}`);
 
-  // 3. Snapshot losing bids now (before the transaction marks them cancelled)
-  //    so we have their PI ids for the fire-and-forget cancellations in step 5.
-  const losingBids = await prisma.bid.findMany({
-    where:  { auctionId, status: "active", id: { not: winningBid.id } },
-    select: { id: true, paymentIntentId: true, bidderId: true },
-  });
-
-  // 4. Atomic DB transaction — all succeed or all roll back.
+  // 3. Atomic DB transaction — all succeed or all roll back.
   //    Cannot include Stripe calls here (they can't be rolled back).
+  let losingBids: { id: string; paymentIntentId: string; bidderId: string }[] = [];
   try {
     await prisma.$transaction(async (tx) => {
+      // 3a. Claim the auction: open → sold, conditionally. This is the single
+      //     point that decides the outcome — a concurrent settle, a seller
+      //     decline, or the cron's decision-timeout expiry all race on this
+      //     same row, and only one transition can win. Losing → throw → the
+      //     refund below. Once claimed, the bid route's version lock (which
+      //     requires status "active") can no longer add bids.
+      const claim = await tx.auction.updateMany({
+        where: { id: auctionId, status: { in: ["active", "pending_seller_decision"] } },
+        data:  {
+          status:          "sold",
+          currentBid:      winningBid.amount,
+          highestBidderId: winningBid.bidderId,
+        },
+      });
+      if (claim.count !== 1) throw new Error(`Auction ${auctionId} is no longer open`);
+
+      // 3b. Snapshot losing bids AFTER the claim, so a bid that landed while
+      //     the PI was being captured is included and gets its PI cancelled.
+      losingBids = await tx.bid.findMany({
+        where:  { auctionId, status: "active", id: { not: winningBid.id } },
+        select: { id: true, paymentIntentId: true, bidderId: true },
+      });
+
       // 4a. Create an Order record to represent this sale.
       const order = await tx.order.create({
         data: {
@@ -119,17 +156,16 @@ export async function settleAuction(auctionId: string): Promise<void> {
         });
       }
 
-      // 4e. Transfer card ownership.
-      await tx.listing.update({
-        where: { id: auction.listingId },
+      // 4e. Transfer card ownership — only from the seller. If the seller no
+      //     longer owns the card (e.g. a duplicate auction already settled),
+      //     abort and refund rather than take it from its current owner.
+      const transfer = await tx.listing.updateMany({
+        where: { id: auction.listingId, ownerId: auction.sellerId },
         data:  { ownerId: winningBid.bidderId, inAuction: false, forSale: false },
       });
-
-      // 4f. Mark auction as sold.
-      await tx.auction.update({
-        where: { id: auctionId },
-        data:  { status: "sold" },
-      });
+      if (transfer.count !== 1) {
+        throw new Error(`Listing ${auction.listingId} is no longer owned by the seller`);
+      }
     });
   } catch (dbErr) {
     // DB failed AFTER PI was captured — refund the buyer to make them whole.
@@ -191,4 +227,41 @@ export function cancelBidPI(paymentIntentId: string): void {
       console.error(`[auctionSettlement] Failed to cancel PI ${paymentIntentId}:`, err);
     }
   });
+}
+
+/**
+ * expireAuction — the non-sale terminal transition (seller decline, decision
+ * timeout, no bids). Claims the auction from `fromStatus` → "expired"
+ * conditionally, so it can never overwrite a concurrent settlement, then
+ * cancels EVERY still-active bid (including one that committed after the
+ * caller read the auction) and releases the card lock. Their Stripe holds
+ * are released after the transaction. Returns false (and changes nothing)
+ * if the auction already left `fromStatus`.
+ */
+export async function expireAuction(
+  auctionId: string,
+  listingId: string,
+  fromStatus: "active" | "pending_seller_decision"
+): Promise<boolean> {
+  const cancelledPIs = await prisma.$transaction(async (tx) => {
+    const claim = await tx.auction.updateMany({
+      where: { id: auctionId, status: fromStatus },
+      data:  { status: "expired" },
+    });
+    if (claim.count !== 1) return null;
+
+    const activeBids = await tx.bid.findMany({
+      where:  { auctionId, status: "active" },
+      select: { paymentIntentId: true },
+    });
+    if (activeBids.length > 0) {
+      await tx.bid.updateMany({ where: { auctionId, status: "active" }, data: { status: "cancelled" } });
+    }
+    await tx.listing.update({ where: { id: listingId }, data: { inAuction: false } });
+    return activeBids.map((b) => b.paymentIntentId);
+  });
+
+  if (cancelledPIs === null) return false;
+  for (const pi of cancelledPIs) cancelBidPI(pi);
+  return true;
 }

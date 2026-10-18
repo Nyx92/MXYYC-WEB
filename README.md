@@ -16,11 +16,12 @@ A Pokemon card marketplace built with Next.js 14. Users can list cards for sale,
 
 ## Environment variables
 
-Create a `.env` file in the project root. All of these are required:
+Create a `.env` file in the project root. Unless marked optional, these are required (`src/lib/env.ts` refuses to boot without the core ones):
 
 ```env
-# Database (see Supabase section below for which URL to use)
+# Database (see Supabase section below for which URL goes where)
 DATABASE_URL=""
+DIRECT_URL=""
 
 # Auth
 NEXTAUTH_SECRET=""
@@ -33,6 +34,16 @@ NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=""
 
 # Cron job auth — any long random string, must match Vercel env var
 CRON_SECRET=""
+
+# Email (Resend) — FROM_EMAIL is optional, defaults to Resend's onboarding sender
+RESEND_API_KEY=""
+FROM_EMAIL="MXYYC <noreply@example.com>"
+
+# SMS (Twilio) — required unless SMS_DEV_MODE="true" (logs SMS to the console instead)
+SMS_DEV_MODE="false"
+TWILIO_ACCOUNT_SID=""
+TWILIO_AUTH_TOKEN=""
+TWILIO_MESSAGING_SERVICE_SID=""
 
 # Supabase image storage
 SUPABASE_URL=""
@@ -48,8 +59,12 @@ JUSTTCG_API_KEY=""
 
 # Discord + Sentry (optional — see "Monitoring" below)
 DISCORD_ALERTS_WEBHOOK_URL=""
+DISCORD_WEBHOOK_URL=""
+NEXT_PUBLIC_SENTRY_DSN=""
 SENTRY_AUTH_TOKEN=""
 SENTRY_ORG=""
+SENTRY_PROJECT=""
+SENTRY_REPORT_PERIOD="1h"
 ```
 
 ---
@@ -80,33 +95,39 @@ pnpm dev:next
 
 ## Database (Supabase + Prisma)
 
-This project uses [Supabase](https://supabase.com/) as the hosted Postgres database and [Prisma](https://www.prisma.io/) as the ORM. Never edit tables directly in the Supabase GUI — always update `prisma/schema.prisma` and run a migration.
+This project uses [Supabase](https://supabase.com/) as the hosted Postgres database and [Prisma](https://www.prisma.io/) as the ORM. Never edit tables directly in the Supabase GUI — always update `prisma/schema.prisma` and push it (see below).
 
 ### Supabase setup
 
 1. Create a new project at [supabase.com](https://supabase.com/).
-2. Go to **Settings → Database** and copy your connection string.
-3. Add it to your `.env`:
+2. Go to **Settings → Database** and copy the connection strings.
+3. Add both to your `.env` (the same values in every environment):
 
 ```env
-# Session Pooler — use this for local dev and running migrations (port 5432)
-DATABASE_URL="postgresql://postgres:<PASSWORD>@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require"
+# Transaction pooler (port 6543) — used by the app at runtime.
+# pgbouncer=true disables prepared statements (required behind the
+# transaction pooler); connection_limit keeps serverless instances from
+# exhausting the pool.
+DATABASE_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@<REGION>.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=5"
 
-# Transaction Pooler — use this in production / Vercel (port 6543)
-# Prevents connection exhaustion in a serverless environment
-DATABASE_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?sslmode=require"
+# Direct / session connection (port 5432) — used by the Prisma CLI for
+# `db push` (schema.prisma's `directUrl`). Required.
+DIRECT_URL="postgresql://postgres.<PROJECT_REF>:<PASSWORD>@<REGION>.pooler.supabase.com:5432/postgres"
 ```
 
-### Create and apply a migration
+### Apply schema changes
+
+This project does **not** use Prisma migrations — there is no `prisma/migrations` folder, and none should be created (don't run `prisma migrate dev`/`migrate deploy`). Edit `prisma/schema.prisma`, then push it:
 
 ```bash
-npx prisma migrate dev --name <migration_name>
-npx prisma migrate deploy
+pnpm exec prisma db push
 ```
+
+`db push` (without `--accept-data-loss`) stops and asks before any destructive change. The dev database is shared, so be careful.
 
 ### Seed the database
 
-Seed data is defined in `prisma/seed.js`.
+Seed data is defined in `prisma/seed.ts`.
 
 ```bash
 pnpm seed
@@ -114,11 +135,11 @@ pnpm seed
 
 ### To reset the db when there's updates to schema
 
-rm -rf prisma/migrations
-npx prisma db push --force-reset
-npx prisma migrate dev --name init
-npx prisma db seed
-pnpm prisma generate
+```bash
+pnpm reset-db
+```
+
+This runs `script/reset-db.sh`: it pushes `schema.prisma` and reseeds mock data, but never drops the protected `PokemonCardCatalog`, `RiftboundCardCatalog` and `PriceHistory` tables (never use `db push --force-reset` — it wipes them).
 
 ---
 

@@ -73,7 +73,7 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
       where:  { id: params.id },
       select: {
         id: true, status: true, endsAt: true, sellerId: true,
-        startingBid: true, currentBid: true,
+        startingBid: true, currentBid: true, buyOutPrice: true,
         listing: { select: { id: true, ...listingCatalogInclude } },
       },
     });
@@ -96,6 +96,14 @@ export async function POST(req: NextRequest, props: { params: Promise<{ id: stri
     if (amountCents < auction.startingBid) {
       return NextResponse.json(
         { error: `Bid must be at least S$${(auction.startingBid / 100).toFixed(2)}` },
+        { status: 400 }
+      );
+    }
+    // A bid at the buy-out price wins instantly, so anything above it would
+    // only overcharge the buyer (e.g. a typo) — reject rather than capture it.
+    if (auction.buyOutPrice !== null && amountCents > auction.buyOutPrice) {
+      return NextResponse.json(
+        { error: `Bid cannot exceed the buy-out price of S$${(auction.buyOutPrice / 100).toFixed(2)}` },
         { status: 400 }
       );
     }

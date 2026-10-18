@@ -1,11 +1,12 @@
 // src/lib/catalogDeltaImport.ts
 //
 // Applies a CatalogDelta (produced by the separate tcg-index-sync project,
-// or a hand-written fixture in tests) to the catalog tables. Upserts by
-// tcgPlayerId — the same key the unique constraint enforces — so this is
-// safe to run repeatedly with overlapping deltas. Cards with no
-// tcgPlayerId are skipped: there's nothing to key an upsert on, and every
-// catalog row this app cares about already requires one.
+// or a hand-written fixture in tests) to the catalog tables. Upserts by the
+// stable source id (externalId for Pokemon, riftboundId for Riftbound), so
+// this is safe to run repeatedly with overlapping deltas even when a card's
+// tcgPlayerId changes. tcgPlayerId is also @unique, so if the incoming id is
+// currently held by a different row it's cleared there first. Cards with no
+// tcgPlayerId are skipped: every catalog row this app cares about requires one.
 
 import type { PrismaClient } from "@prisma/client";
 
@@ -73,10 +74,17 @@ export async function importCatalogDelta(
 
     try {
       if (delta.game === "POKEMON") {
-        const existing = await prisma.pokemonCardCatalog.findUnique({ where: { tcgPlayerId: card.tcgPlayerId } });
+        const where = { externalId: card.externalId };
+        const existing = await prisma.pokemonCardCatalog.findUnique({ where });
         const data = toPokemonData(card);
+        // ponytail: not transactional — if the upsert then fails, the other
+        // row just loses a tcgPlayerId the source says it no longer owns.
+        await prisma.pokemonCardCatalog.updateMany({
+          where: { tcgPlayerId: card.tcgPlayerId, NOT: where },
+          data: { tcgPlayerId: null },
+        });
         await prisma.pokemonCardCatalog.upsert({
-          where: { tcgPlayerId: card.tcgPlayerId },
+          where,
           // Assumes the delta producer always emits a complete record for a
           // "changed" card (an unconditional overwrite is correct for
           // legitimate errata/art corrections) — a future partial-record
@@ -86,10 +94,15 @@ export async function importCatalogDelta(
         });
         existing ? updated++ : created++;
       } else {
-        const existing = await prisma.riftboundCardCatalog.findUnique({ where: { tcgPlayerId: card.tcgPlayerId } });
+        const where = { riftboundId: card.externalId };
+        const existing = await prisma.riftboundCardCatalog.findUnique({ where });
         const data = toRiftboundData(card);
+        await prisma.riftboundCardCatalog.updateMany({
+          where: { tcgPlayerId: card.tcgPlayerId, NOT: where },
+          data: { tcgPlayerId: null },
+        });
         await prisma.riftboundCardCatalog.upsert({
-          where: { tcgPlayerId: card.tcgPlayerId },
+          where,
           // Same complete-record assumption as the Pokemon branch above.
           update: data,
           create: data,

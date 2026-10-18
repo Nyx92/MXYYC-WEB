@@ -40,6 +40,11 @@ import { postCronResult } from "@/lib/discord";
 
 type PendingCard = { id: string; tcgPlayerId: string | null; language?: string };
 
+// A card that fails this many runs leaves the queue (see
+// priceBackfillAttempts in schema.prisma) instead of being retried — and
+// burning JustTCG's daily request budget — on every run forever.
+const MAX_BACKFILL_ATTEMPTS = 5;
+
 /**
  * Writes one variant's full backfill in a small, fixed number of queries
  * instead of one round trip per day. A card that's never been backfilled
@@ -132,6 +137,22 @@ async function backfillCard(
   );
 }
 
+// Best-effort: a failure to record the attempt must not mask the original
+// backfill error (it's already logged and in the run summary).
+async function recordFailedAttempt(
+  model: "pokemonCardCatalog" | "riftboundCardCatalog",
+  id: string
+) {
+  try {
+    await (prisma[model] as any).update({
+      where: { id },
+      data: { priceBackfillAttempts: { increment: 1 } },
+    });
+  } catch (err) {
+    console.error("[cron/backfill-prices] Could not record failed attempt:", id, err);
+  }
+}
+
 async function runBackfill(req: NextRequest): Promise<NextResponse> {
   const authHeader = req.headers.get("authorization");
   const expectedToken = process.env.CRON_SECRET;
@@ -172,7 +193,14 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
 
   const capturedAt = new Date(new Date().toISOString().slice(0, 10));
   // No listings filter here: every pending card is eligible, listed or not.
-  const basePending = { tcgPlayerId: { not: null }, priceBackfilledAt: null };
+  const basePending = {
+    tcgPlayerId: { not: null },
+    priceBackfilledAt: null,
+    priceBackfillAttempts: { lt: MAX_BACKFILL_ATTEMPTS },
+  };
+  // Fewest-failed first, so a card that keeps failing drops behind fresh
+  // ones instead of being picked first (and failing again) every run.
+  const queueOrder = [{ priceBackfillAttempts: "asc" as const }, { id: "asc" as const }];
 
   // Listed cards first, since a card someone's actually trying to sell
   // matters more than one nobody's listed yet, when JustTCG's daily budget
@@ -194,7 +222,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       where: { ...basePending, listings: { some: {} } },
       select,
       take: remaining,
-      orderBy: { id: "asc" },
+      orderBy: queueOrder,
     });
     if (listed.length >= remaining) return listed;
 
@@ -202,7 +230,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       where: { ...basePending, listings: { none: {} } },
       select,
       take: remaining - listed.length,
-      orderBy: { id: "asc" },
+      orderBy: queueOrder,
     });
     return [...listed, ...unlisted];
   }
@@ -232,6 +260,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       const msg = err instanceof Error ? err.message : String(err);
       results.errors.push(`Pokemon card ${card.id}: ${msg}`);
       console.error("[cron/backfill-prices] Failed to backfill card:", card.id, msg);
+      await recordFailedAttempt("pokemonCardCatalog", card.id);
     }
   });
 
@@ -248,15 +277,28 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
       const msg = err instanceof Error ? err.message : String(err);
       results.errors.push(`Riftbound card ${card.id}: ${msg}`);
       console.error("[cron/backfill-prices] Failed to backfill card:", card.id, msg);
+      await recordFailedAttempt("riftboundCardCatalog", card.id);
     }
   });
 
-  const [remainingPokemon, remainingRiftbound] = await Promise.all([
+  // Cards that used up their attempts are out of the queue but still need a
+  // human look (bad tcgPlayerId, card JustTCG doesn't know) — report them.
+  const givenUp = {
+    tcgPlayerId: { not: null },
+    priceBackfilledAt: null,
+    priceBackfillAttempts: { gte: MAX_BACKFILL_ATTEMPTS },
+  };
+  const [remainingPokemon, remainingRiftbound, givenUpPokemon, givenUpRiftbound] = await Promise.all([
     prisma.pokemonCardCatalog.count({ where: basePending }),
     prisma.riftboundCardCatalog.count({ where: basePending }),
+    prisma.pokemonCardCatalog.count({ where: givenUp }),
+    prisma.riftboundCardCatalog.count({ where: givenUp }),
   ]);
+  const gaveUp = givenUpPokemon + givenUpRiftbound;
 
-  const summary = `Backfilled: ${results.backfilled}, Failed: ${results.failed}, Remaining: ${remainingPokemon + remainingRiftbound}`;
+  const summary =
+    `Backfilled: ${results.backfilled}, Failed: ${results.failed}, Remaining: ${remainingPokemon + remainingRiftbound}` +
+    (gaveUp > 0 ? `, Gave up after ${MAX_BACKFILL_ATTEMPTS} attempts: ${gaveUp}` : "");
   console.log(`[cron/backfill-prices] Done. ${summary}`);
   await postCronResult({
     job: "backfill-prices",
@@ -269,6 +311,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
     backfilled: results.backfilled,
     failed: results.failed,
     remaining: remainingPokemon + remainingRiftbound,
+    gaveUp,
     ...(results.errors.length > 0 && { errors: results.errors }),
   });
 }

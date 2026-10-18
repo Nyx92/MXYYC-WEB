@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # prisma resolves prisma/schema.prisma relative to the CALLER's working
 # directory, not this script's location — always run from the project root
@@ -17,11 +17,11 @@ echo ""
 # ENTIRE schema regardless of what actually changed, which would wipe the
 # catalog and price history tables too. Plain `db push` only alters what
 # schema.prisma says needs to change, so a table that isn't changing is
-# never touched. --accept-data-loss auto-approves a specific destructive
-# change it detects (e.g. a dropped column) without dropping every table
-# the way --force-reset does.
+# never touched. No --accept-data-loss either: if the push would be
+# destructive (e.g. dropping a column on a catalog/price table — which the
+# row-count check below can't detect), Prisma prompts/aborts instead.
 BEFORE=$(pnpm exec tsx prisma/countPreservedTables.ts)
-npx prisma db push --accept-data-loss
+pnpm exec prisma db push
 AFTER=$(pnpm exec tsx prisma/countPreservedTables.ts)
 
 if [ "$BEFORE" != "$AFTER" ]; then

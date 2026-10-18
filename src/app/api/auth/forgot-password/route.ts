@@ -47,12 +47,26 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email },
+    // Case-insensitive: older accounts may be stored mixed-case (see
+    // POST /api/user, which now lowercases on signup).
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email.trim(), mode: "insensitive" } },
       select: { id: true, password: true },
     });
 
-    if (user?.password) {
+    // 🔒 Per-target-email cap on top of the per-IP one, so callers spread
+    // across many IPs still can't flood one victim's inbox (or keep
+    // invalidating their real reset link). Over the cap we silently skip the
+    // send and fall through to the same generic response, so this can't be
+    // used to probe which emails have accounts. Skipping also skips the token
+    // rotation below, so the newest link already in the victim's inbox stays
+    // valid — an attacker using up the cap can't lock the victim out.
+    const emailLimit = checkRateLimit(`forgot-password:email:${email.trim().toLowerCase()}`, {
+      limit: 3,
+      windowMs: 60 * 60 * 1000,
+    });
+
+    if (user?.password && emailLimit.allowed) {
       const rawToken = crypto.randomBytes(32).toString("hex");
       const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
@@ -66,7 +80,7 @@ export async function POST(req: NextRequest) {
 
       const resetUrl = `${SITE_URL}/auth/reset-password?uid=${user.id}&token=${rawToken}`;
       sendEmailAsync({
-        to: email,
+        to: email.trim(),
         subject: "Reset your MXYYC password",
         html: buildPasswordResetEmail(resetUrl),
       });

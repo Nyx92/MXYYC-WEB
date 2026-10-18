@@ -69,12 +69,18 @@ describe("GET /api/cron/backfill-prices", () => {
     expect(res.status).toBe(401);
   });
 
-  it("only queries cards with priceBackfilledAt: null", async () => {
+  it("only queries cards with priceBackfilledAt: null and attempts left, fewest-failed first", async () => {
     await GET(makeRequest("test-cron-secret"));
 
     expect(mockPrisma.pokemonCardCatalog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { tcgPlayerId: { not: null }, listings: { some: {} }, priceBackfilledAt: null },
+        where: {
+          tcgPlayerId: { not: null },
+          listings: { some: {} },
+          priceBackfilledAt: null,
+          priceBackfillAttempts: { lt: 5 },
+        },
+        orderBy: [{ priceBackfillAttempts: "asc" }, { id: "asc" }],
       })
     );
   });
@@ -181,7 +187,33 @@ describe("GET /api/cron/backfill-prices", () => {
     const data = await res.json();
 
     expect(data.failed).toBe(1);
-    expect(mockPrisma.pokemonCardCatalog.update).not.toHaveBeenCalled();
+    // Not marked done — only its failed-attempt counter moves, which pushes
+    // it behind fresh cards next run.
+    expect(mockPrisma.pokemonCardCatalog.update).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.pokemonCardCatalog.update).toHaveBeenCalledWith({
+      where: { id: "pkm-1" },
+      data: { priceBackfillAttempts: { increment: 1 } },
+    });
+  });
+
+  it("still reports the original failure if recording the attempt also fails", async () => {
+    mockPrisma.pokemonCardCatalog.findMany
+      .mockResolvedValueOnce([{ id: "pkm-1", tcgPlayerId: "42360", language: "English" }])
+      .mockResolvedValueOnce([]);
+    mockFetchCardVariants.mockRejectedValue(new Error("JustTCG request failed: 500"));
+    mockPrisma.pokemonCardCatalog.update.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await GET(makeRequest("test-cron-secret"));
+    expect(res.status).toBe(200);
+    expect((await res.json()).failed).toBe(1);
+  });
+
+  it("reports cards that used up their attempts in the run summary", async () => {
+    mockPrisma.pokemonCardCatalog.count.mockImplementation(async (args: any) =>
+      args.where.priceBackfillAttempts?.gte ? 3 : 0
+    );
+    const data = await (await GET(makeRequest("test-cron-secret"))).json();
+    expect(data.gaveUp).toBe(3);
   });
 
   it("caps the per-run limit at 950 even if a larger value is requested", async () => {

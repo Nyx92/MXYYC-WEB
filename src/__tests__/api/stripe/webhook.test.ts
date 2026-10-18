@@ -294,6 +294,24 @@ describe("POST /api/stripe/webhook", () => {
     );
   });
 
+  it("does not refund when a concurrent delivery of the same event already completed the sale", async () => {
+    mockPrisma.order.findFirst.mockImplementation(async (args: { where: { status: string } }) =>
+      args.where.status === "PAID" ? { id: "order-1" } : null
+    );
+    mockPrisma.$transaction.mockImplementation(async (fn) => {
+      mockTx.cardTransaction.findUnique.mockResolvedValue(null);
+      mockTx.order.findUnique.mockResolvedValue(PENDING_ORDER);
+      mockTx.order.update.mockResolvedValue({});
+      mockTx.cardTransaction.create.mockRejectedValue(new Error("Unique constraint failed"));
+      return fn(mockTx);
+    });
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    expect(mockStripeInstance.refunds.create).not.toHaveBeenCalled();
+    mockPrisma.order.findFirst.mockReset();
+  });
+
   // ── Refund also fails ─────────────────────────────────────────────────────
 
   it("returns 500 when transfer fails AND Stripe refund also fails", async () => {
@@ -391,7 +409,7 @@ describe("POST /api/stripe/webhook", () => {
     expect(mockCartTx.cardTransaction.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ listingId: "card-1" }) })
     );
-    expect(mockCartTx.offer.updateMany).toHaveBeenCalledWith({ where: { listingId: "card-1" }, data: { archivedAt: expect.any(Date) } });
+    expect(mockCartTx.offer.updateMany).toHaveBeenCalledWith({ where: { listingId: "card-1" }, data: { archivedAt: expect.any(Date), expiresAt: expect.any(Date) } });
     expect(mockCartTx.cartItem.deleteMany).toHaveBeenCalledWith({
       where: { cartId: "cart-1", listingId: { in: ["card-1", "card-2"] } },
     });

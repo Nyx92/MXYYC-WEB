@@ -49,7 +49,11 @@ export async function GET(req: Request) {
         collectedAt: r.collectedAt,
         collectedByStaff: r.collectedByStaff,
         customer: r.user,
-        cards: r.listings.map((listing) => withListingDisplay(listing)),
+        // Only cards the customer still owns — staff must never pack a card
+        // that has since been transferred to someone else.
+        cards: r.listings
+          .filter((listing) => listing.ownerId === r.user.id)
+          .map((listing) => withListingDisplay(listing)),
       })),
     });
   } catch (err) {

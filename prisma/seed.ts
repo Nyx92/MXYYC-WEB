@@ -128,6 +128,21 @@ async function uploadMockImage(filename: string): Promise<string> {
 async function main() {
   console.log("🚀 Starting database seed...");
 
+  // The admin account's password is a publicly-known literal ("admin") in
+  // this file, which is fine for a disposable local/dev DB but would be a
+  // real vulnerability if this script were ever run against production (the
+  // password is sitting in source control). In production, require an
+  // explicit SEED_ADMIN_PASSWORD env var instead of silently falling back to
+  // the weak default; dev/test behavior is unchanged (still "admin" unless
+  // overridden). Checked before the cleanup below so a refused run never
+  // wipes anything first.
+  if (process.env.NODE_ENV === "production" && !process.env.SEED_ADMIN_PASSWORD) {
+    throw new Error(
+      "SEED_ADMIN_PASSWORD must be set to seed the admin account in production " +
+        "(refusing to create admin@pokemon.com with the publicly-known default password)."
+    );
+  }
+
   // ✅ Clean up (child tables first)
   // Bid references Auction
   await prisma.bid.deleteMany();
@@ -161,20 +176,6 @@ async function main() {
   // into it — clear it explicitly or stale tokens accumulate forever.
   await prisma.verificationToken.deleteMany();
   // Hash passwords
-  //
-  // The admin account's password is a publicly-known literal ("admin") in
-  // this file, which is fine for a disposable local/dev DB but would be a
-  // real vulnerability if this script were ever run against production (the
-  // password is sitting in source control). In production, require an
-  // explicit SEED_ADMIN_PASSWORD env var instead of silently falling back to
-  // the weak default; dev/test behavior is unchanged (still "admin" unless
-  // overridden).
-  if (process.env.NODE_ENV === "production" && !process.env.SEED_ADMIN_PASSWORD) {
-    throw new Error(
-      "SEED_ADMIN_PASSWORD must be set to seed the admin account in production " +
-        "(refusing to create admin@pokemon.com with the publicly-known default password)."
-    );
-  }
   const adminPassword = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD || "admin", 10);
   const ashPassword = await bcrypt.hash("123", 10);
   const mistyPassword = await bcrypt.hash("123", 10);

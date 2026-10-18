@@ -180,6 +180,11 @@ model PokemonCardCatalog {
   // resumable job's queue, so a card is only ever deep-pulled once, not
   // re-pulled on every backfill run.
   priceBackfilledAt DateTime?
+  // Failed backfill attempts. The job pulls the fewest-failed cards first
+  // and drops a card from the queue after MAX_BACKFILL_ATTEMPTS, so a card
+  // JustTCG can never price stops burning the daily request budget and can't
+  // block the queue. Reset to 0 to retry it.
+  priceBackfillAttempts Int @default(0)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -213,8 +218,9 @@ model RiftboundCardCatalog {
   tcgPlayerId     String?   @unique
   listings        Listing[]
   priceHistory    PriceHistory[]
-  // See PokemonCardCatalog.priceBackfilledAt above — same resumable-queue role.
+  // See PokemonCardCatalog.priceBackfilledAt / priceBackfillAttempts above.
   priceBackfilledAt DateTime?
+  priceBackfillAttempts Int @default(0)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -429,7 +435,9 @@ model Offer {
   // Stripe PaymentIntent ID for the authorised-but-not-captured charge.
   // Created when the buyer submits the offer form (capture_method: manual).
   // Captured on accept, cancelled on reject/expiry.
-  paymentIntentId String?
+  // @unique: one PI backs at most one offer (DB-level guard behind the route's
+  // reuse check, which can't close a simultaneous-request race on its own).
+  paymentIntentId String? @unique
 
   // When this pending offer expires (24h from creation).
   // After this point the cron job will cancel the PI and mark status → "expired".
@@ -585,7 +593,7 @@ model Auction {
   // active | pending_seller_decision | sold | expired
   status String @default("active")
 
-  endsAt                 DateTime // when the auction closes (1–6 days from creation)
+  endsAt                 DateTime // when the auction closes (1–5 days from creation; see src/constants/auctions.ts)
   sellerDecisionDeadline DateTime? // set when → pending_seller_decision (+24h); null otherwise
 
   // Optimistic lock counter: every bid increments this.
@@ -619,7 +627,9 @@ model Bid {
   bidderId  String
 
   amount          Int // bid amount in cents
-  paymentIntentId String // Stripe PI with capture_method: "manual"
+  // Stripe PI with capture_method: "manual". @unique: one PI backs at most
+  // one bid (DB-level guard behind the bid route's reuse check).
+  paymentIntentId String @unique
 
   // active | won | cancelled
   status String @default("active")

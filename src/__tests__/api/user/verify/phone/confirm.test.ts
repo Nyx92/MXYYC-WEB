@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const mockPrisma = vi.hoisted(() => ({
-  user: { findUnique: vi.fn(), update: vi.fn() },
+  user: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
 }));
 const mockGetServerSession = vi.hoisted(() => vi.fn());
 const mockCheckRateLimit = vi.hoisted(() => vi.fn().mockReturnValue({ allowed: true }));
@@ -31,6 +31,7 @@ const CODE = "719284";
 const CODE_HASH = hashVerificationCode(CODE);
 
 beforeEach(() => {
+  mockPrisma.user.updateMany.mockResolvedValue({ count: 1 });
   vi.clearAllMocks();
   mockCheckRateLimit.mockReturnValue({ allowed: true });
   mockGetServerSession.mockResolvedValue({ user: { id: "user-1" } });
@@ -57,6 +58,17 @@ describe("POST /api/user/verify/phone/confirm", () => {
     });
   });
 
+  it("returns 409 when the phone changed (code cleared) between the check and the write", async () => {
+    mockPrisma.user.findUnique.mockResolvedValue({
+      phoneVerificationCodeHash: CODE_HASH,
+      phoneVerificationCodeExpiresAt: new Date(Date.now() + 60_000),
+      phoneVerificationAttempts: 0,
+    });
+    mockPrisma.user.updateMany.mockResolvedValueOnce({ count: 0 });
+    const res = await POST(postRequest({ code: CODE }));
+    expect(res.status).toBe(409);
+  });
+
   it("verifies the phone number and clears the code on a correct match", async () => {
     mockPrisma.user.findUnique.mockResolvedValue({
       phoneVerificationCodeHash: CODE_HASH,
@@ -65,8 +77,8 @@ describe("POST /api/user/verify/phone/confirm", () => {
     });
     const res = await POST(postRequest({ code: CODE }));
     expect(res.status).toBe(200);
-    expect(mockPrisma.user.update).toHaveBeenCalledWith({
-      where: { id: "user-1" },
+    expect(mockPrisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: "user-1", phoneVerificationCodeHash: CODE_HASH },
       data: {
         phoneVerified: true,
         phoneVerificationCodeHash: null,

@@ -23,6 +23,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,14 @@ export async function GET(req: NextRequest) {
     return new Response("Unauthorized", { status: 401 });
   }
   const userId = session.user.id;
+
+  // 🔒 Each open stream runs a DB count every 5 s against a small pooled
+  // connection budget, so cap how often one account can open streams.
+  // Generous enough for several tabs reconnecting after the platform's
+  // response timeout. In-memory stopgap (see src/lib/rateLimit.ts).
+  if (!checkRateLimit(`notification-stream:${userId}`, { limit: 60, windowMs: 60 * 1000 }).allowed) {
+    return new Response("Too many requests", { status: 429 });
+  }
 
   const encoder = new TextEncoder();
 

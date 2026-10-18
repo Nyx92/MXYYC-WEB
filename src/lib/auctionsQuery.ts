@@ -75,7 +75,6 @@ export function formatAuction(auction: AuctionWithRelations) {
     reservePrice: auction.reservePrice != null ? centsToDollars(auction.reservePrice) : null,
     buyOutPrice: auction.buyOutPrice != null ? centsToDollars(auction.buyOutPrice) : null,
     currentBid: auction.currentBid != null ? centsToDollars(auction.currentBid) : null,
-    highestBidderId: auction.highestBidderId,
     status: auction.status,
     endsAt: auction.endsAt.toISOString(),
     sellerDecisionDeadline: auction.sellerDecisionDeadline?.toISOString() ?? null,
@@ -116,10 +115,15 @@ function buildOrderBy(sort: AuctionSort): Prisma.AuctionOrderByWithRelationInput
       return [{ bids: { _count: "desc" } }, { endsAt: "asc" }];
     case "newest":
       return [{ createdAt: "desc" }];
+    // currentBid is null until the first bid; Postgres would put NULLs first
+    // on DESC, listing every no-bid auction above the priciest one. Pin them
+    // last in both directions (then by startingBid).
+    // ponytail: not a true effective-price sort (COALESCE(currentBid,
+    // startingBid)); needs a computed column or raw SQL if that matters.
     case "priceLow":
-      return [{ currentBid: "asc" }, { startingBid: "asc" }];
+      return [{ currentBid: { sort: "asc", nulls: "last" } }, { startingBid: "asc" }];
     case "priceHigh":
-      return [{ currentBid: "desc" }, { startingBid: "desc" }];
+      return [{ currentBid: { sort: "desc", nulls: "last" } }, { startingBid: "desc" }];
     case "endingSoon":
     default:
       return [{ endsAt: "asc" }];

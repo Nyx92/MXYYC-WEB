@@ -1,11 +1,11 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 echo "📦 Installing dependencies..."
 pnpm install
 
-echo "🔧 Running Prisma migrate against Supabase..."
-npx prisma migrate dev --name init_auth
+echo "🔧 Pushing Prisma schema to Supabase..."
+pnpm exec prisma db push
 
 echo "🌱 Seeding database..."
 pnpm seed

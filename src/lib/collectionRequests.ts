@@ -3,6 +3,8 @@
 // Shared helpers for the in-person collection workflow, used by every
 // route under src/app/api/collection-requests/**.
 
+import type { Prisma } from "@prisma/client";
+
 // A request is still "open" (can accept more items, isn't finished yet)
 // until it reaches COLLECTED.
 export const OPEN_COLLECTION_STATUSES = ["REQUESTED", "PACKED"] as const;
@@ -19,6 +21,22 @@ export function generateCollectionRef(): string {
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
   return `PU-${yy}${mm}-${rand}`;
+}
+
+/**
+ * The Prisma WHERE fragment for "this listing is free to be locked or change
+ * hands": not in an auction, not earmarked for pickup, and not held by a live
+ * Buy Now reservation. The single source for every conditional write that
+ * moves a card into an exclusive state (auction create, offer accept, owner
+ * re-list) — checked under the row lock, so the read-then-write races
+ * between those flows can't both win. Add any new lock here.
+ */
+export function listingLockableWhere(now: Date = new Date()): Prisma.ListingWhereInput {
+  return {
+    inAuction: false,
+    collectionRequestId: null,
+    OR: [{ reservedUntil: null }, { reservedUntil: { lt: now } }],
+  };
 }
 
 /**

@@ -53,7 +53,6 @@ vi.mock("@supabase/supabase-js", () => ({
 // these tests can post fake, non-decodable image bytes through the route.
 vi.mock("@/lib/imageProcessing", () => ({
   compressCardImage: vi.fn(async (input: Buffer) => ({ buffer: input, contentType: "image/webp" })),
-  toWebpStoragePath: (storagePath: string) => storagePath.replace(/\.[^./]+$/, ".webp"),
 }));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
@@ -126,6 +125,13 @@ describe("POST /api/cards", () => {
     mockGetServerSession.mockResolvedValue(USER_SESSION);
     const res = await POST(postRequest(buildFormData()));
     expect(res.status).toBe(403);
+    expect(mockPrisma.listing.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when forSale is true and price is zero (mirrors PUT)", async () => {
+    mockGetServerSession.mockResolvedValue(ADMIN_SESSION);
+    const res = await POST(postRequest(buildFormData({ price: "0" })));
+    expect(res.status).toBe(400);
     expect(mockPrisma.listing.create).not.toHaveBeenCalled();
   });
 
