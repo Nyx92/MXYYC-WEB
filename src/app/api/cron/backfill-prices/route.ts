@@ -10,6 +10,8 @@ import {
   type JustTcgMarket,
 } from "@/lib/pricing/justtcg";
 import { loadJustTcgQuota, recordJobRun, saveJustTcgQuota } from "@/lib/jobState";
+import { sgDateString, sgDay } from "@/lib/sgTime";
+import { withPriceHistoryLock } from "@/lib/pricing/priceHistoryLock";
 import { postCronResult } from "@/lib/discord";
 
 /**
@@ -79,7 +81,8 @@ async function backfillVariant(
 ) {
   const priceCentsByDay = new Map<string, number>();
   for (const point of market.price_history ?? []) {
-    const day = new Date(point.t * 1000).toISOString().slice(0, 10);
+    // Labelled with the Singapore calendar day of the snapshot (src/lib/sgTime.ts).
+    const day = sgDateString(new Date(point.t * 1000));
     priceCentsByDay.set(day, usdToSgdCents(point.p));
   }
   // The live price can be newer than the last price_history point, or the
@@ -90,13 +93,14 @@ async function backfillVariant(
   if (priceCentsByDay.size === 0) return;
 
   const days = [...priceCentsByDay.keys()];
-  const existingRows = await prisma.priceHistory.findMany({
-    where: {
-      [catalogIdField]: catalogId,
-      variant: label,
-      capturedAt: { in: days.map((d) => new Date(d)) },
-    },
-    select: { id: true, capturedAt: true },
+  const existingIdByDay = await withPriceHistoryLock(async (tx) => {
+    const existingRows = await tx.priceHistory.findMany({
+      where: {
+        [catalogIdField]: catalogId,
+        variant: label,
+        capturedAt: { in: days.map((d) => new Date(d)) },
+      },
+      select: { id: true, capturedAt: true },
   });
   const existingIdByDay = new Map(
     existingRows.map((r) => [r.capturedAt.toISOString().slice(0, 10), r.id])
@@ -112,8 +116,10 @@ async function backfillVariant(
       capturedAt: new Date(day),
     }));
   if (toCreate.length > 0) {
-    await prisma.priceHistory.createMany({ data: toCreate });
+    await tx.priceHistory.createMany({ data: toCreate });
   }
+  return existingIdByDay;
+  });
 
   // Rare (typically zero or one row, per the comment above), but if a whole
   // year's history collides — e.g. a card gets backfilled twice — run these
@@ -217,7 +223,7 @@ async function backfillPrices(req: NextRequest): Promise<NextResponse> {
   }
   let paused = false;
 
-  const capturedAt = new Date(new Date().toISOString().slice(0, 10));
+  const capturedAt = sgDay(new Date());
   // No listings filter here: every pending card is eligible, listed or not.
   const basePending = {
     tcgPlayerId: { not: null },

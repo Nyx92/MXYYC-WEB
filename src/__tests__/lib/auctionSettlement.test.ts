@@ -29,6 +29,7 @@ const mockTx = vi.hoisted(() => ({
 
 const mockPrisma = vi.hoisted(() => ({
   auction: { findUnique: vi.fn() },
+  order: { findFirst: vi.fn() }, // "already sold by an overlapping call?" — undefined = no
   $transaction: vi.fn(),
 }));
 

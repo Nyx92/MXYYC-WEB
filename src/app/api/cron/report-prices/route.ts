@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { postCronResult } from "@/lib/discord";
 import { loadJustTcgQuota } from "@/lib/jobState";
+import { startOfSgDay } from "@/lib/sgTime";
 
 /**
  * GET /api/cron/report-prices ← schedule: once a day (cron-job.org)
@@ -35,7 +36,7 @@ async function buildReport() {
   const dayAgo = new Date(now.getTime() - DAY_MS);
   const weekAgo = new Date(now.getTime() - 7 * DAY_MS);
   const eightDaysAgo = new Date(now.getTime() - 8 * DAY_MS);
-  const startOfToday = new Date(now.toISOString().slice(0, 10));
+  const startOfToday = startOfSgDay(now);
 
   const priced = { tcgPlayerId: { not: null } };
   const count = async (where: object) =>
@@ -58,13 +59,13 @@ async function buildReport() {
     count({ ...priced, priceRefreshedAt: { lt: eightDaysAgo } }),
   ]);
 
-  // History rows (a day before the day they were written) vs today's-price rows.
+  // History rows (a day before the Singapore day they were written) vs today's-price rows.
   const [[writes], [dupes]] = await Promise.all([
     prisma.$queryRaw<{ history_rows: Num; history_cards: Num; today_rows: Num }[]>`
       SELECT
-        count(*) FILTER (WHERE "capturedAt" < date("createdAt" AT TIME ZONE 'UTC')) AS history_rows,
-        count(DISTINCT coalesce("pokemonCardId", "riftboundCardId")) FILTER (WHERE "capturedAt" < date("createdAt" AT TIME ZONE 'UTC')) AS history_cards,
-        count(*) FILTER (WHERE "capturedAt" = date("createdAt" AT TIME ZONE 'UTC')) AS today_rows
+        count(*) FILTER (WHERE "capturedAt" < date(("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Singapore')) AS history_rows,
+        count(DISTINCT coalesce("pokemonCardId", "riftboundCardId")) FILTER (WHERE "capturedAt" < date(("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Singapore')) AS history_cards,
+        count(*) FILTER (WHERE "capturedAt" = date(("createdAt" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Singapore')) AS today_rows
       FROM "PriceHistory" WHERE "createdAt" >= ${dayAgo}`,
     prisma.$queryRaw<{ dupes: Num }[]>`
       SELECT count(*) AS dupes FROM (

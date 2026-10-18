@@ -29,10 +29,14 @@ type PriceTooltipProps = {
   label?: string | number;
 };
 
-const formatShortDate = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-GB", {
+// Price dates are Singapore calendar days sent as "YYYY-MM-DD" (see
+// src/lib/sgTime.ts). Formatted in UTC so the browser's own time zone can't
+// shift the day: "2026-10-18" shows as 18/10 everywhere.
+const formatShortDate = (isoDate: string) =>
+  new Date(isoDate).toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "2-digit",
+    timeZone: "UTC",
   });
 
 const PriceTooltip: React.FC<PriceTooltipProps> = ({

@@ -12,6 +12,8 @@ import {
 import { toPriceVariantLabel } from "@/app/utils/mapCondition";
 import { postCronResult } from "@/lib/discord";
 import { recordJobRun, saveJustTcgQuota } from "@/lib/jobState";
+import { sgDay, startOfSgDay } from "@/lib/sgTime";
+import { withPriceHistoryLock } from "@/lib/pricing/priceHistoryLock";
 
 /**
  * GET /api/cron/refresh-prices ← schedule: every 30 minutes (cron-job.org)
@@ -23,7 +25,7 @@ import { recordJobRun, saveJustTcgQuota } from "@/lib/jobState";
  * ~15 s of work, picks up where the last one stopped, and costs 0 JustTCG
  * calls when nothing is due (≤ ~15 s of new work per slice). Priority:
  *
- *   1. Listed cards not refreshed today → a daily price for every card
+ *   1. Listed cards not refreshed today (Singapore day) → a daily price for every card
  *      someone is actually selling (few calls).
  *   2. Every other catalog card not refreshed in the last 7 days → a weekly
  *      price for the whole catalog (~330 calls a week at ~32k cards).
@@ -88,31 +90,33 @@ async function writePricesInBulk(writes: PriceWrite[], capturedAt: Date) {
   async function writeGroup(catalogIdField: "pokemonCardId" | "riftboundCardId", group: PriceWrite[]) {
     if (group.length === 0) return;
     const catalogIds = [...new Set(group.map((w) => w.catalogId))];
-    const existingRows = await prisma.priceHistory.findMany({
-      where: { [catalogIdField]: { in: catalogIds }, capturedAt },
-      select: { id: true, [catalogIdField]: true, variant: true },
-    });
-    const existingIdByKey = new Map(
-      existingRows.map((r) => [`${(r as Record<string, unknown>)[catalogIdField]}|${r.variant}`, r.id])
-    );
-
-    const toCreate: { game: string; [key: string]: unknown }[] = [];
     const toUpdate: { id: string; priceCents: number }[] = [];
-    for (const w of group) {
-      const existingId = existingIdByKey.get(`${w.catalogId}|${w.variant}`);
-      if (existingId) {
-        toUpdate.push({ id: existingId, priceCents: w.priceCents });
-      } else {
-        toCreate.push({
-          game: w.game,
-          [catalogIdField]: w.catalogId,
-          variant: w.variant,
-          priceCents: w.priceCents,
-          capturedAt,
-        });
+    await withPriceHistoryLock(async (tx) => {
+      const existingRows = await tx.priceHistory.findMany({
+        where: { [catalogIdField]: { in: catalogIds }, capturedAt },
+        select: { id: true, [catalogIdField]: true, variant: true },
+      });
+      const existingIdByKey = new Map(
+        existingRows.map((r) => [`${(r as Record<string, unknown>)[catalogIdField]}|${r.variant}`, r.id])
+      );
+
+      const toCreate: { game: string; [key: string]: unknown }[] = [];
+      for (const w of group) {
+        const existingId = existingIdByKey.get(`${w.catalogId}|${w.variant}`);
+        if (existingId) {
+          toUpdate.push({ id: existingId, priceCents: w.priceCents });
+        } else {
+          toCreate.push({
+            game: w.game,
+            [catalogIdField]: w.catalogId,
+            variant: w.variant,
+            priceCents: w.priceCents,
+            capturedAt,
+          });
+        }
       }
-    }
-    if (toCreate.length > 0) await prisma.priceHistory.createMany({ data: toCreate as never[] });
+      if (toCreate.length > 0) await tx.priceHistory.createMany({ data: toCreate as never[] });
+    });
     // Rare (only a same-day rerun collides here), but if it does happen it can
     // be every row in the batch — run these concurrently, capped like every
     // other DB-writing loop in this file, instead of one round trip at a time.
@@ -164,8 +168,10 @@ async function runRefresh(req: NextRequest): Promise<NextResponse> {
 async function refreshPrices(): Promise<NextResponse> {
   const startedAt = Date.now();
   const now = new Date();
-  const capturedAt = new Date(now.toISOString().slice(0, 10));
-  const startOfToday = capturedAt; // UTC midnight — same day boundary as capturedAt
+  // Singapore calendar day (see src/lib/sgTime.ts): today's price row is
+  // labelled with it, and "refreshed today" means since 00:00 SGT.
+  const capturedAt = sgDay(now);
+  const startOfToday = startOfSgDay(now);
   const weekAgo = new Date(now.getTime() - CATALOG_REFRESH_DAYS * 24 * 60 * 60 * 1000);
   const cap = MAX_BATCHES_PER_SLICE * 100;
 

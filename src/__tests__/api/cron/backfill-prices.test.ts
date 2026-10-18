@@ -25,6 +25,9 @@ const mockJobState = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/pricing/priceHistoryLock", () => ({
+  withPriceHistoryLock: (fn: (tx: unknown) => unknown) => fn(mockPrisma),
+}));
 vi.mock("@/lib/jobState", () => mockJobState);
 vi.mock("@/lib/pricing/justtcg", () => ({
   fetchCardVariants: mockFetchCardVariants,
@@ -41,6 +44,7 @@ vi.mock("@/lib/pricing/justtcg", () => ({
 }));
 
 import { GET } from "@/app/api/cron/backfill-prices/route";
+import { sgDay } from "@/lib/sgTime";
 
 function makeRequest(authToken?: string, query = "") {
   return new NextRequest(`http://localhost/api/cron/backfill-prices${query}`, {
@@ -161,7 +165,7 @@ describe("GET /api/cron/backfill-prices", () => {
       .mockResolvedValueOnce([]);
     mockFetchCardVariants.mockResolvedValue([CARD_WITH_HISTORY]);
     mockPrisma.priceHistory.findMany.mockResolvedValue([
-      { id: "existing-today-row", capturedAt: new Date(new Date().toISOString().slice(0, 10)) },
+      { id: "existing-today-row", capturedAt: sgDay(new Date()) },
     ]);
 
     await GET(makeRequest("test-cron-secret"));

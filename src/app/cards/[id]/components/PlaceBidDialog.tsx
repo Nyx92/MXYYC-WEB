@@ -118,10 +118,24 @@ function BidForm({ auction, onClose, onSuccess, open, initialAmount }: BidFormPr
     onClose();
   };
 
-  const handleContinue = () => {
+  // Same limits the server enforces: at least the minimum bid, and no more
+  // than the buy-out price (a buy-out bid wins outright, so anything above it
+  // would only overcharge the buyer).
+  const bidError = (): string | null => {
     const parsed = parseFloat(amount);
     if (!amount || isNaN(parsed) || dollarsToCents(parsed) < minBidCents) {
-      setError(`Bid must be at least S$${minBid.toFixed(2)}.`);
+      return `Bid must be at least S$${minBid.toFixed(2)}.`;
+    }
+    if (buyOut !== null && dollarsToCents(parsed) > dollarsToCents(buyOut)) {
+      return `Bid cannot exceed the buy-out price of S$${buyOut.toFixed(2)}.`;
+    }
+    return null;
+  };
+
+  const handleContinue = () => {
+    const message = bidError();
+    if (message) {
+      setError(message);
       return;
     }
     setError(null);
@@ -138,11 +152,12 @@ function BidForm({ auction, onClose, onSuccess, open, initialAmount }: BidFormPr
       setError("Card element not found. Please refresh.");
       return;
     }
-    const parsed = parseFloat(amount);
-    if (!amount || isNaN(parsed) || dollarsToCents(parsed) < minBidCents) {
-      setError(`Bid must be at least S$${minBid.toFixed(2)}.`);
+    const message = bidError();
+    if (message) {
+      setError(message);
       return;
     }
+    const parsed = parseFloat(amount);
 
     setLoading(true);
     setError(null);

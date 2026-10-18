@@ -330,6 +330,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // A resubmission of the PI this offer already holds (double click, retry
+    // after a timeout) is a no-op. Treating it as an amend would cancel the
+    // "old" PI — which is the buyer's live hold.
+    if (existing?.status === "pending" && existing.paymentIntentId === paymentIntentId) {
+      return NextResponse.json({ offer: serializeOffer(existing), amended: true });
+    }
+
     // ── 6a. Amend: cancel the old PI and update the existing pending offer ───
     if (existing?.status === "pending") {
       // The buyer is changing their offer. Cancel the OLD PaymentIntent first
@@ -351,6 +358,13 @@ export async function POST(req: NextRequest) {
         data: amendData,
       });
       if (swapped.count !== 1) {
+        // An overlapping submit of this same PI may have won the swap — then
+        // this PI is the offer's live hold and must not be cancelled.
+        const holder = await prisma.offer.findUnique({ where: { paymentIntentId }, select: { id: true } });
+        if (holder?.id === existing.id) {
+          const current = await prisma.offer.findUniqueOrThrow({ where: { id: existing.id } });
+          return NextResponse.json({ offer: serializeOffer(current), amended: true });
+        }
         await stripe.paymentIntents.cancel(paymentIntentId).catch(() => {});
         return NextResponse.json(
           { error: "Your offer changed while you were updating it. Please refresh and try again." },

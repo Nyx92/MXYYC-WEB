@@ -22,6 +22,9 @@ export default defineConfig({
     // This is correct because we are testing server-side API route handlers,
     // not React components or anything that needs a browser environment.
     environment: "node",
+    // Client-component tests (React Testing Library) need a DOM — only those
+    // files run in jsdom so the API/lib suites keep the faster node env.
+    environmentMatchGlobs: [["src/__tests__/components/**", "jsdom"]],
 
     // ── Globals ───────────────────────────────────────────────────────────────
     // Makes describe(), it(), expect(), vi() etc. available in every test file
@@ -84,6 +87,7 @@ export default defineConfig({
       "**/.{idea,git,cache,output,temp}/**",
       "**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*",
       "**/.worktrees/**",
+      "src/__tests__/integration/**", // DB tests: pnpm test:integration
     ],
 
     // ── Coverage (pnpm test:coverage only) ───────────────────────────────────
@@ -102,9 +106,9 @@ export default defineConfig({
       reporter: ["text", "lcov", "html"],
       // Only measure coverage for production code we actually care about.
       // This excludes things like Next.js page files, components, etc.
-      include: ["src/app/api/**/*.ts", "src/lib/**/*.ts"],
+      include: ["src/app/api/**/*.ts", "src/lib/**/*.ts", "src/app/**/*.tsx"],
       // Don't count the test files themselves as "covered" code
-      exclude: ["src/**/*.test.ts"],
+      exclude: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     },
   },
 

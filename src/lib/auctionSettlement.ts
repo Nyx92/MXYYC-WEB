@@ -168,6 +168,18 @@ export async function settleAuction(auctionId: string): Promise<void> {
       }
     });
   } catch (dbErr) {
+    // An overlapping call for the same auction (buy-out vs cron, a double
+    // click on accept) may have recorded this very sale: its claim won, ours
+    // waited on the row lock and lost. The buyer got the card, so there is
+    // nothing to undo — refunding would hand the winner their money back.
+    const alreadySold = await prisma.order.findFirst({
+      where: { stripePaymentIntentId: winningBid.paymentIntentId, status: "PAID" },
+      select: { id: true },
+    });
+    if (alreadySold) {
+      console.warn(`[auctionSettlement] Auction ${auctionId} was settled by an overlapping call — no refund.`);
+      return;
+    }
     // DB failed AFTER PI was captured — refund the buyer to make them whole.
     console.error("[auctionSettlement] DB transaction failed after capture, issuing refund:", dbErr);
     try {

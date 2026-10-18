@@ -62,6 +62,15 @@ describe("importCatalogDelta", () => {
     expect(en).toEqual(expect.objectContaining({ nameEn: "Exeggcute", nameJa: null, hp: null, types: [], stage: null }));
   });
 
+  it("stores English names with the Japanese ones in nameJa / setNameJa when the delta provides both", async () => {
+    db(mockPrisma.pokemonCardCatalog, []);
+    await pokemon([{ externalId: "M5-001", tcgPlayerId: "695052", name: "Tropius", nameJa: "トロピウス", language: "Japanese",
+      imageUrl: null, setId: "M5", setNameEn: "Abyss Eye", setNameJa: "アビスアイ", rarity: "Common", localId: "001" }]);
+    expect(mockPrisma.pokemonCardCatalog.createMany.mock.calls[0][0].data[0]).toEqual(expect.objectContaining({
+      nameEn: "Tropius", nameJa: "トロピウス", setNameEn: "Abyss Eye", setNameJa: "アビスアイ",
+    }));
+  });
+
   it("updates cards that already exist and counts created vs updated", async () => {
     db(mockPrisma.pokemonCardCatalog, ["b"]);
     const result = await pokemon([

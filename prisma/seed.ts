@@ -191,6 +191,9 @@ async function main() {
   await prisma.auction.deleteMany();
   // Listing references User/catalog tables
   await prisma.listing.deleteMany();
+  // CollectionRequest references User with onDelete: Restrict (pickup history
+  // is never removed as a side effect), so clear it before users.
+  await prisma.collectionRequest.deleteMany();
   // PokemonCardCatalog and RiftboundCardCatalog are deliberately NEVER
   // cleared here — unlike everything else in this function, they can hold
   // real imported data (card images, JustTCG price-backfill progress) that

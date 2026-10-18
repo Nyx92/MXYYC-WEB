@@ -60,3 +60,47 @@ jobs:
 
       - name: Lint
         run: pnpm lint
+
+  integration:
+    name: Database integration tests
+    runs-on: ubuntu-latest
+
+    # Real Postgres for the route handlers (src/__tests__/integration). Only
+    # Stripe/NextAuth/email/Discord/JustTCG are mocked. The suite refuses any
+    # TEST_DATABASE_URL host other than localhost/127.0.0.1/postgres.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: mxyyc_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d mxyyc_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # globalSetup pushes prisma/schema.prisma to this DB (db push --force-reset).
+      - name: Run integration tests
+        run: pnpm test:integration
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/mxyyc_test

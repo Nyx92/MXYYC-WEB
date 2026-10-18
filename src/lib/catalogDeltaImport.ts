@@ -33,11 +33,13 @@ function toPokemonData(card: CatalogDeltaCard) {
   return {
     externalId: card.externalId,
     tcgPlayerId: card.tcgPlayerId,
-    // Japanese cards have no English name in the source — `name` is the
-    // Japanese one. nameEn is required, so it holds that too, and nameJa
-    // records it as what it actually is.
+    // tcg-index-sync sends the English name in `name` (for Japanese cards,
+    // TCGPlayer's English product name once matched) and the Japanese one in
+    // `nameJa`. Older deltas without nameJa: a Japanese card's `name` is
+    // Japanese, so it is recorded there too.
     nameEn: card.name,
-    nameJa: language === "Japanese" ? card.name : null,
+    nameJa: (card.nameJa as string | null | undefined) ?? (language === "Japanese" ? card.name : null),
+    setNameJa: (card.setNameJa as string | null | undefined) ?? null,
     hp: typeof card.hp === "number" ? card.hp : null,
     types: Array.isArray(card.types) ? (card.types as string[]) : [],
     stage: (card.stage as string | null | undefined) ?? null,

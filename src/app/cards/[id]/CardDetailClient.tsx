@@ -220,9 +220,7 @@ export default function CardDetailClient({
           message: data.error || "Failed to start checkout. Please try again.",
           needsVerification: res.status === 403,
         });
-        return;
-      }
-      if (data.url) {
+      } else if (data.url) {
         // Stays disabled while the browser navigates away to Stripe.
         window.location.href = data.url;
         return;

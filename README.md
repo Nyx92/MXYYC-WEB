@@ -324,6 +324,22 @@ Each test file mocks three things so no real services are hit:
 - **Prisma** — `vi.mock("@/lib/prisma", ...)` replaces the DB client with fakes. No real database is ever connected to.
 - **next-auth** — `vi.mock("next-auth", ...)` controls who is "logged in" for each test.
 
+### Integration tests (real Postgres)
+
+`src/__tests__/integration/` runs the real API route handlers against a real Postgres to prove the database-level guarantees the mocked suite can't: conditional `updateMany` guards, unique constraints, transactions and concurrent-request races (Buy Now reservation, Stripe webhook, offers, auctions, collection requests, price crons). Only external services are mocked (Stripe, NextAuth session, email/SMS, Discord, JustTCG).
+
+```bash
+# Any disposable Postgres works, e.g.:
+docker run -d --name mxyyc-test-db -e POSTGRES_USER=test -e POSTGRES_HOST_AUTH_METHOD=trust \
+  -e POSTGRES_DB=mxyyc_test -p 54329:5432 postgres:16
+
+TEST_DATABASE_URL=postgresql://test@127.0.0.1:54329/mxyyc_test pnpm test:integration
+```
+
+- The suite **wipes the database**: it runs `prisma db push --force-reset` once, then truncates every table before each test. It only reads `TEST_DATABASE_URL` (never `DATABASE_URL`/`DIRECT_URL` from `.env`) and refuses to start unless the host is `localhost`, `127.0.0.1` or `postgres` (the CI service).
+- `pnpm test` does not run these; CI runs them in a separate `integration` job against a `postgres:16` service container.
+- Tests marked `it.fails` document known bugs — they pass while the bug exists and start failing once it is fixed (then flip them to `it`).
+
 ### CI
 
 Tests run automatically on every push and pull request to `main` via GitHub Actions (`.github/workflows/ci.yml`). A failed test blocks the build — Vercel will not deploy until all tests pass.

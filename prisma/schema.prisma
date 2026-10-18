@@ -193,6 +193,10 @@ model PokemonCardCatalog {
   updatedAt      DateTime  @updatedAt
 
   @@index([setId])
+  // refresh-prices: oldest-refreshed first. backfill-prices: queue of
+  // not-yet-backfilled cards, fewest failures first.
+  @@index([priceRefreshedAt])
+  @@index([priceBackfilledAt, priceBackfillAttempts])
 }
 
 // One row per real, canonical Riftbound card. Same role as
@@ -230,6 +234,8 @@ model RiftboundCardCatalog {
   updatedAt       DateTime  @updatedAt
 
   @@index([setId])
+  @@index([priceRefreshedAt])
+  @@index([priceBackfilledAt, priceBackfillAttempts])
 }
 
 // 🃏 Listing — one seller's specific physical copy of a card, listed for
@@ -263,7 +269,7 @@ model Listing {
   reservedCheckoutSessionId String?
 
   // Relations
-  owner        User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  owner        User              @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   ownerId      String
   offers       Offer[]
   transactions CardTransaction[]
@@ -291,7 +297,10 @@ model Listing {
   updatedAt DateTime @updatedAt
 
   @@index([ownerId])
-  @@index([forSale])
+  // Marketplace: for-sale listings, newest first (GET /api/cards pagination).
+  @@index([forSale, createdAt(sort: Desc)])
+  // Stripe webhook / checkout expiry look listings up by checkout session.
+  @@index([reservedCheckoutSessionId])
   @@index([game])
   @@index([pokemonCardId])
   @@index([riftboundCardId])
@@ -325,8 +334,13 @@ model PriceHistory {
 
   createdAt DateTime @default(now())
 
-  @@index([game, pokemonCardId, variant])
-  @@index([game, riftboundCardId, variant])
+  // Charts and the price jobs read one card's rows for a variant over a date
+  // range; capturedAt last so the same index serves range scans.
+  @@index([game, pokemonCardId, variant, capturedAt])
+  @@index([game, riftboundCardId, variant, capturedAt])
+  // Daily price report: rows written / captured in the last day or week.
+  @@index([createdAt])
+  @@index([capturedAt])
 }
 
 // 📦 CollectionRequest — a customer's request to pick up one or more owned
@@ -350,7 +364,7 @@ model CollectionRequest {
   // staff alert, e.g. "PU-2609-A1B2" — easier to say/write than a cuid.
   requestRef String @unique
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
   userId String
 
   status String @default("REQUESTED") // REQUESTED | PACKED | COLLECTED
@@ -395,7 +409,7 @@ model CollectionRequest {
 
 model Order {
   id        String  @id @default(uuid())
-  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Restrict)
   listingId String
 
   seller   User   @relation("SellerOrders", fields: [sellerId], references: [id], onDelete: Restrict)
@@ -419,6 +433,7 @@ model Order {
   offer        Offer?
 
   @@index([stripeCheckoutSessionId])
+  @@index([listingId])
   @@index([buyerId])
   @@index([sellerId])
 }
@@ -449,14 +464,14 @@ model Offer {
   expiresAt DateTime?
 
   // Relations
-  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Restrict)
   listingId String
-  buyer     User    @relation("UserOffers", fields: [buyerId], references: [id], onDelete: Cascade)
+  buyer     User    @relation("UserOffers", fields: [buyerId], references: [id], onDelete: Restrict)
   buyerId   String
   // Snapshot of who the seller was at offer-creation time.
   // listing.ownerId changes when the listing is transferred, so we can't rely on it
   // to look up a seller's offer history after an accepted sale.
-  seller    User    @relation("OffersReceived", fields: [sellerId], references: [id], onDelete: Cascade)
+  seller    User    @relation("OffersReceived", fields: [sellerId], references: [id], onDelete: Restrict)
   sellerId  String
 
   // Linked to an Order when the accepted offer is paid
@@ -467,6 +482,10 @@ model Offer {
   updatedAt DateTime @updatedAt
 
   @@index([listingId])
+  // expire-offers cron: pending offers past expiresAt; accepted offers stuck
+  // since updatedAt.
+  @@index([status, expiresAt])
+  @@index([status, updatedAt])
   @@index([buyerId])
   @@index([sellerId])
 }
@@ -489,6 +508,7 @@ model CardWatchlist {
   createdAt DateTime @default(now())
 
   @@unique([listingId, userId])
+  @@index([userId]) // GET /api/watchlist lists one user's entries
 }
 
 // 🛒 Cart — one persistent cart per user; created lazily on first add
@@ -538,15 +558,17 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([userId, createdAt(sort: Desc)])
+  // Unread count — polled every 5 s per open notification stream.
+  @@index([userId, read])
 }
 
 model CardTransaction {
   id String @id @default(uuid())
 
-  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
   orderId String
 
-  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Restrict)
   listingId String
 
   seller   User   @relation("SellerTransactions", fields: [sellerId], references: [id], onDelete: Restrict)
@@ -566,6 +588,7 @@ model CardTransaction {
   // Composite: one stripe event may produce multiple transactions (one per order in cart checkout).
   @@unique([stripeEventId, orderId])
   @@index([buyerId])
+  @@index([listingId])
   @@index([sellerId])
 }
 
@@ -582,7 +605,7 @@ model CardTransaction {
 // Historical auction rows are kept for audit/display after the listing is sold.
 model Auction {
   id        String  @id @default(uuid())
-  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  listing   Listing @relation(fields: [listingId], references: [id], onDelete: Restrict)
   listingId String
   seller    User    @relation("SellerAuctions", fields: [sellerId], references: [id], onDelete: Restrict)
   sellerId  String
@@ -612,6 +635,11 @@ model Auction {
   updatedAt DateTime @updatedAt
 
   @@index([status, endsAt])
+  // expire-auctions pass 2: pending decisions past their deadline.
+  @@index([status, sellerDecisionDeadline])
+  // Card pages and auction create look auctions up by listing.
+  @@index([listingId])
+  @@index([sellerId])
 }
 
 // 💵 Bid — a single binding bid placed by a buyer in an auction.
@@ -626,7 +654,7 @@ model Auction {
 //   cancelled — outbid or auction ended without a win; PI was cancelled
 model Bid {
   id        String  @id @default(uuid())
-  auction   Auction @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  auction   Auction @relation(fields: [auctionId], references: [id], onDelete: Restrict)
   auctionId String
   bidder    User    @relation("UserBids", fields: [bidderId], references: [id], onDelete: Restrict)
   bidderId  String

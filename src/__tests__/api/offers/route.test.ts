@@ -49,6 +49,8 @@ const mockPrisma = vi.hoisted(() => ({
     findMany: vi.fn(),   // returns list of offers (GET)
     create: vi.fn(),     // new offer
     updateMany: vi.fn(), // amend existing offer (conditional PI swap)
+    findUnique: vi.fn(), // who holds this PI after a lost swap — undefined = nobody
+    findUniqueOrThrow: vi.fn(),
   },
 }));
 

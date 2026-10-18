@@ -28,6 +28,9 @@ const mockRecordJobRun = vi.hoisted(() => vi.fn());
 const mockSaveJustTcgQuota = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+vi.mock("@/lib/pricing/priceHistoryLock", () => ({
+  withPriceHistoryLock: (fn: (tx: unknown) => unknown) => fn(mockPrisma),
+}));
 vi.mock("@/lib/jobState", () => ({
   recordJobRun: mockRecordJobRun,
   saveJustTcgQuota: mockSaveJustTcgQuota,
@@ -60,6 +63,7 @@ vi.mock("@/lib/pricing/justtcg", () => ({
 }));
 
 import { GET } from "@/app/api/cron/refresh-prices/route";
+import { startOfSgDay } from "@/lib/sgTime";
 
 function makeRequest(authToken?: string) {
   return new NextRequest("http://localhost/api/cron/refresh-prices", {
@@ -234,9 +238,9 @@ describe("GET /api/cron/refresh-prices", () => {
     expect(catalogQuery).toMatchObject({ tcgPlayerId: { not: null } });
   });
 
-  it("only picks listed cards not refreshed since UTC midnight today", async () => {
+  it("only picks listed cards not refreshed since midnight today, Singapore time", async () => {
     await GET(makeRequest("test-cron-secret"));
-    const startOfToday = new Date(new Date().toISOString().slice(0, 10));
+    const startOfToday = startOfSgDay(new Date());
     expect(mockPrisma.pokemonCardCatalog.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
