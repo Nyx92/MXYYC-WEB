@@ -214,7 +214,7 @@ export default function IngestBatchReview({ batchId }: { batchId: string }) {
         total += data.published;
         if (!data.remaining) {
           const skipped = data.skipped?.length ?? 0;
-          setMessage({ type: "success", text: `Listed ${total} cards for sale.${skipped ? ` ${skipped} skipped (no price or no card).` : ""}` });
+          setMessage({ type: "success", text: `Listed ${total} card${total === 1 ? "" : "s"} for sale.${skipped ? ` ${skipped} skipped (no price or no card).` : ""}` });
           break;
         }
       }
@@ -254,7 +254,9 @@ export default function IngestBatchReview({ batchId }: { batchId: string }) {
         {busy && <CircularProgress size={24} />}
       </Box>
       {approvedNoPrice > 0 && (
-        <Alert severity="warning" sx={{ mb: 2 }}>{approvedNoPrice} approved cards have no price and will not be published until you set one.</Alert>
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {approvedNoPrice === 1 ? "1 approved card has" : `${approvedNoPrice} approved cards have`} no price and will not be published until you set one.
+        </Alert>
       )}
       {message && <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>{message.text}</Alert>}
 
