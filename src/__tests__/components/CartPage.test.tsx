@@ -114,4 +114,30 @@ describe("CartPage", () => {
     await act(async () => { del.resolve(ok()); });
     await waitFor(() => expect(refreshCount).toHaveBeenCalledTimes(1));
   });
+
+  it("puts a removed item back and shows an error when DELETE /api/cart/:id fails", async () => {
+    route((url, init) => {
+      if (url === "/api/cart/i1" && init?.method === "DELETE") return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+      throw new Error(`unexpected ${url}`);
+    });
+    await renderCart();
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Remove/ })[0]);
+    await screen.findByText(/Couldn't remove that item/);
+    expect(calls("GET", "/api/cart")).toHaveLength(2); // reloaded from the server
+    expect(await screen.findByText("Card i1")).toBeTruthy();
+    expect(refreshCount).toHaveBeenCalled();
+  });
+
+  it("restores the cart and shows an error when DELETE /api/cart fails", async () => {
+    route((url, init) => {
+      if (url === "/api/cart" && init?.method === "DELETE") return Promise.reject(new Error("offline"));
+      throw new Error(`unexpected ${url}`);
+    });
+    await renderCart();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear Cart" }));
+    await screen.findByText(/Couldn't clear your cart/);
+    expect(await screen.findByText("Card i2")).toBeTruthy();
+  });
 });

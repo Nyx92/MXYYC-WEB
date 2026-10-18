@@ -400,9 +400,15 @@ export default function CartPage() {
         return { ...prev, packages };
       });
       decrementCount();
-      await fetch(`/api/cart/${itemId}`, { method: "DELETE" });
+      const res = await fetch(`/api/cart/${itemId}`, { method: "DELETE" }).catch(() => null);
+      if (!res?.ok) {
+        // The item is still in the server cart — say so and show the real cart.
+        setCheckoutError("Couldn't remove that item. Please try again.");
+        void loadCart();
+        refreshCount();
+      }
     },
-    [decrementCount]
+    [decrementCount, loadCart, refreshCount]
   );
 
   // ── Checkout ───────────────────────────────────────────────────────────────
@@ -438,9 +444,13 @@ export default function CartPage() {
     setCartData((prev) => (prev ? { ...prev, packages: [] } : prev));
     // Refresh only after the DELETE lands — otherwise the count is re-read
     // from a cart that still has every item in it.
-    await fetch("/api/cart", { method: "DELETE" }).catch(() => {});
+    const res = await fetch("/api/cart", { method: "DELETE" }).catch(() => null);
+    if (!res?.ok) {
+      setCheckoutError("Couldn't clear your cart. Please try again.");
+      void loadCart();
+    }
     refreshCount();
-  }, [refreshCount]);
+  }, [loadCart, refreshCount]);
 
   // ── Summary (all items, not just selected) ─────────────────────────────────
 
