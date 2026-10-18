@@ -160,6 +160,7 @@ model PokemonCardCatalog {
   language       String
   regulationMark String?
   localId        String? // card number within its set, e.g. "016" or "SV107"
+  printedNumber  String? // as printed on the card, e.g. "001/073" or "2/102" (tcg-index-sync)
   setId          String
   setNameEn      String
   setNameJa      String?
@@ -222,6 +223,7 @@ model RiftboundCardCatalog {
   setId           String
   setLabel        String
   collectorNumber String // string, not Int — overnumbered variants carry a suffix
+  printedNumber   String? // as printed on the card, e.g. "002/219" (tcg-index-sync)
   imageUrl        String
   tcgPlayerId     String?   @unique
   listings        Listing[]

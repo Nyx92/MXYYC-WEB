@@ -48,7 +48,8 @@ export function resolveListingDisplay(
       rarity: p.rarity,
       setName: p.setNameEn,
       language: p.language,
-      cardNumber: p.localId,
+      // As printed ("001/073"); localId for rows imported before it existed.
+      cardNumber: p.printedNumber ?? p.localId,
       tcgPlayerId: p.tcgPlayerId ?? "",
     };
   }
@@ -59,7 +60,7 @@ export function resolveListingDisplay(
       rarity: r.rarity,
       setName: r.setLabel,
       language: "English",
-      cardNumber: r.collectorNumber,
+      cardNumber: r.printedNumber ?? r.collectorNumber,
       tcgPlayerId: r.tcgPlayerId ?? "",
       type: r.type,
       supertype: r.supertype,

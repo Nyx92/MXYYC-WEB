@@ -63,6 +63,13 @@ describe("resolveListingDisplay", () => {
     });
   });
 
+  it("shows the printed card number when the catalog has it", () => {
+    const pokemon = { ...POKEMON_LISTING, pokemonCard: { ...POKEMON_LISTING.pokemonCard, printedNumber: "4/102" } };
+    const riftbound = { ...RIFTBOUND_LISTING, riftboundCard: { ...RIFTBOUND_LISTING.riftboundCard, printedNumber: "176/219" } };
+    expect(resolveListingDisplay(pokemon as any).cardNumber).toBe("4/102");
+    expect(resolveListingDisplay(riftbound as any).cardNumber).toBe("176/219");
+  });
+
   it("includes type and supertype when the riftboundCard has them set", () => {
     const listingWithTypes = {
       ...RIFTBOUND_LISTING,

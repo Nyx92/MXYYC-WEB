@@ -49,6 +49,7 @@ function toPokemonData(card: CatalogDeltaCard) {
     setNameEn: (card.setNameEn as string) ?? "",
     rarity: (card.rarity as string) ?? "",
     localId: (card.localId as string) ?? null,
+    printedNumber: (card.printedNumber as string | null | undefined) ?? null,
   };
 }
 
@@ -62,6 +63,7 @@ function toRiftboundData(card: CatalogDeltaCard) {
     setLabel: (card.setLabel as string) ?? "",
     rarity: (card.rarity as string) ?? "",
     collectorNumber: (card.collectorNumber as string) ?? "",
+    printedNumber: (card.printedNumber as string | null | undefined) ?? null,
     type: (card.type as string) ?? "",
     supertype: (card.supertype as string) ?? "",
   };

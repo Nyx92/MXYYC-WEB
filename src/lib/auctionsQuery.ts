@@ -55,7 +55,7 @@ function resolveAuctionCard(listing: AuctionWithRelations["listing"]): AuctionCa
     condition: listing.condition,
     setName,
     language,
-    cardNumber: p?.localId ?? r?.collectorNumber ?? null,
+    cardNumber: p ? (p.printedNumber ?? p.localId) : (r ? (r.printedNumber ?? r.collectorNumber) : null),
     rarity,
     tcgPlayerId: p?.tcgPlayerId ?? r?.tcgPlayerId ?? "",
     inAuction: listing.inAuction,

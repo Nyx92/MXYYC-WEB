@@ -71,6 +71,16 @@ describe("importCatalogDelta", () => {
     }));
   });
 
+  it("stores the printed card number for both games", async () => {
+    db(mockPrisma.pokemonCardCatalog, []);
+    db(mockPrisma.riftboundCardCatalog, []);
+    await pokemon([{ externalId: "swsh3.5-1", tcgPlayerId: "222990", name: "Venusaur V", imageUrl: null, localId: "1", printedNumber: "001/073" }]);
+    await importCatalogDelta(mockPrisma as any, { game: "RIFTBOUND", generatedAt: "2026-10-19T00:00:00Z",
+      cards: [{ externalId: "unl-002-219", tcgPlayerId: "9", name: "X", imageUrl: null, collectorNumber: "2", printedNumber: "002/219", type: "Unit", supertype: "" }] });
+    expect(mockPrisma.pokemonCardCatalog.createMany.mock.calls[0][0].data[0]).toEqual(expect.objectContaining({ localId: "1", printedNumber: "001/073" }));
+    expect(mockPrisma.riftboundCardCatalog.createMany.mock.calls[0][0].data[0]).toEqual(expect.objectContaining({ collectorNumber: "2", printedNumber: "002/219" }));
+  });
+
   it("updates cards that already exist and counts created vs updated", async () => {
     db(mockPrisma.pokemonCardCatalog, ["b"]);
     const result = await pokemon([

@@ -52,7 +52,7 @@ export async function GET(req: Request) {
           title: entry.nameEn,
           setName: entry.setNameEn,
           rarity: entry.rarity,
-          cardNumber: entry.localId,
+          cardNumber: entry.printedNumber ?? entry.localId,
           // Returned (even though the "found" summary UI only displays a
           // subset) so the upload form can silently backfill every
           // catalog-identity field the server still requires on submit —
@@ -77,7 +77,7 @@ export async function GET(req: Request) {
         title: entry.name,
         setName: entry.setLabel,
         rarity: entry.rarity,
-        cardNumber: entry.collectorNumber,
+        cardNumber: entry.printedNumber ?? entry.collectorNumber,
         // Canonical card art, so the admin can visually confirm this is the
         // right card. PokemonCardCatalog also has an imageUrl field now;
         // this route just doesn't read/return it in the POKEMON branch above.
