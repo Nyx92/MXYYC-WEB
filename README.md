@@ -133,6 +133,8 @@ Seed data is defined in `prisma/seed.ts`.
 pnpm seed
 ```
 
+The seed's mock listings are attached to **real** Pokémon catalog cards (looked up by `externalId`, see `POKEMON_SEED_CARDS` in `prisma/seed.ts`), so the card catalog must be imported first (see "Card catalog" below). On a database without the catalog, the seed stops with a clear error before it deletes anything. `pnpm reset-db` keeps the catalog tables, so it is not affected.
+
 ### To reset the db when there's updates to schema
 
 ```bash

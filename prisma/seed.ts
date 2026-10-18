@@ -1,5 +1,5 @@
 // prisma/seed.ts
-import { PrismaClient, Prisma } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
@@ -143,6 +143,41 @@ async function main() {
     );
   }
 
+  // ── Pokémon catalog cards the mock listings below are attached to ──
+  // Real rows created by the card catalog import (tcg-index-sync +
+  // `pnpm import:catalog-delta`; see README "Card catalog"). The seed never
+  // creates catalog rows itself: invented rows would collide with the real
+  // cards' unique tcgPlayerIds, and their prices would be wrong. Looked up
+  // before the cleanup below, so a missing catalog stops the seed before it
+  // deletes anything.
+  const POKEMON_SEED_CARDS = {
+    charizardVmax: "swsh3-20", // Charizard VMAX — Darkness Ablaze
+    venusaurV: "swsh3.5-1", // Venusaur V — Champion's Path
+    blastoiseHoloRare: "base1-2", // Blastoise — Base Set
+    starmieGxEn: "sm115-14", // Starmie GX — Hidden Fates
+    starmieGxJp: "S9a-075", // スターミーV — Battle Region (Japanese)
+    psyduck: "pl1-87", // Psyduck — Platinum
+    gyaradosVmax: "swsh7-29", // Gyarados VMAX — Evolving Skies
+    shuckle: "neo3-51", // Shuckle — Neo Revelation
+    psyduckV: "SV2a-054", // コダック — Pokémon Card 151 (Japanese)
+    psyduckBaseSet: "base3-53", // Psyduck — Fossil
+    gyaradosVmaxVividVoltage: "swsh7-207", // Gyarados VMAX (alt art) — Evolving Skies
+  } as const;
+  const seedCards = await prisma.pokemonCardCatalog.findMany({
+    where: { externalId: { in: Object.values(POKEMON_SEED_CARDS) } },
+  });
+  const seedCardByExternalId = new Map(seedCards.map((c) => [c.externalId, c]));
+  const missingSeedCards = Object.values(POKEMON_SEED_CARDS).filter((id) => !seedCardByExternalId.has(id));
+  if (missingSeedCards.length > 0) {
+    throw new Error(
+      `The Pokémon card catalog must be imported before seeding (missing: ${missingSeedCards.join(", ")}). ` +
+        `See README "Card catalog".`
+    );
+  }
+  const pokemonCatalog = Object.fromEntries(
+    Object.entries(POKEMON_SEED_CARDS).map(([key, externalId]) => [key, seedCardByExternalId.get(externalId)!])
+  ) as Record<keyof typeof POKEMON_SEED_CARDS, (typeof seedCards)[number]>;
+
   // ✅ Clean up (child tables first)
   // Bid references Auction
   await prisma.bid.deleteMany();
@@ -250,154 +285,7 @@ async function main() {
 
   console.log("✅ Uploaded all mock images");
 
-  // ── Pokémon catalog — one row per real card, shared by every listing of it ──
-  // externalId values are invented "mock-*" slugs: this seed data predates any
-  // real card-index import, so there's no real source-index id to carry over.
-  // setId is likewise an invented short set code (schema requires it as a
-  // non-nullable field alongside setNameEn) paired one-to-one with setNameEn,
-  // the same way the Riftbound catalog below pairs setId "UNL" with setLabel
-  // "Unleashed" — not sourced from a real card index.
-  //
-  // Upserted by tcgPlayerId (every mock entry sets a real one, deliberately,
-  // so JustTCG price lookups work even for mock listings) instead of
-  // create()d, since PokemonCardCatalog is never cleared above — a row the
-  // real card-lookup import pipeline already created for the same card is
-  // left as-is (update: {}) rather than overwritten with these sparse mock
-  // fields, and re-running this script is safe either way.
-  const upsertPokemonCard = (data: Prisma.PokemonCardCatalogCreateInput) =>
-    prisma.pokemonCardCatalog.upsert({
-      where: { tcgPlayerId: data.tcgPlayerId as string },
-      update: {},
-      create: data,
-    });
-
-  const pokemonCatalog = {
-    charizardVmax: await upsertPokemonCard({
-      externalId: "mock-shining-fates-charizard-vmax",
-      nameEn: "Charizard VMAX",
-      localId: "SV107",
-      setId: "SHF",
-      setNameEn: "Shining Fates",
-      rarity: "Ultra Rare",
-      language: "English",
-      tcgPlayerId: "232496",
-    }),
-    venusaurV: await upsertPokemonCard({
-      externalId: "mock-champions-path-venusaur-v",
-      nameEn: "Venusaur V",
-      localId: "01/73",
-      setId: "CPA",
-      setNameEn: "Champion's Path",
-      rarity: "Rare",
-      language: "English",
-      tcgPlayerId: "222990",
-    }),
-    blastoiseHoloRare: await upsertPokemonCard({
-      externalId: "mock-base-set-blastoise-holo-rare",
-      nameEn: "Blastoise Holo Rare",
-      localId: "002/102",
-      setId: "BS",
-      setNameEn: "Base Set",
-      rarity: "Holo Rare",
-      language: "English",
-      tcgPlayerId: "42360",
-    }),
-    starmieGxEn: await upsertPokemonCard({
-      externalId: "mock-hidden-fates-starmie-gx-en",
-      nameEn: "Starmie GX",
-      localId: "14/68",
-      setId: "HIF",
-      setNameEn: "Hidden Fates",
-      rarity: "Ultra Rare",
-      language: "English",
-      tcgPlayerId: "197658",
-    }),
-    // Separate catalog row for the Japanese print — language is catalog-level
-    // (per the design spec), so a different-language print of the same card
-    // is a different catalog row, not a per-listing field.
-    starmieGxJp: await upsertPokemonCard({
-      externalId: "mock-hidden-fates-starmie-gx-jp",
-      nameEn: "Starmie GX",
-      localId: "14/68",
-      setId: "HIF",
-      setNameEn: "Hidden Fates",
-      rarity: "Ultra Rare",
-      language: "Japanese",
-      tcgPlayerId: "197659",
-    }),
-    psyduck: await upsertPokemonCard({
-      externalId: "mock-platinum-psyduck",
-      nameEn: "Psyduck",
-      localId: "87/127",
-      setId: "PL",
-      setNameEn: "Platinum",
-      rarity: "Common",
-      language: "English",
-      tcgPlayerId: "88439",
-    }),
-    gyaradosVmax: await upsertPokemonCard({
-      externalId: "mock-evolving-skies-gyarados-vmax",
-      nameEn: "Gyarados VMAX",
-      localId: "109/203",
-      setId: "EVS",
-      setNameEn: "Evolving Skies",
-      rarity: "Ultra Rare",
-      language: "English",
-      tcgPlayerId: "246724",
-    }),
-    shuckle: await upsertPokemonCard({
-      externalId: "mock-neo-revelation-shuckle",
-      nameEn: "Shuckle",
-      localId: "70/64",
-      setId: "NRV",
-      setNameEn: "Neo Revelation",
-      rarity: "Common",
-      language: "English",
-      tcgPlayerId: "14936",
-    }),
-    psyduckV: await upsertPokemonCard({
-      externalId: "mock-fusion-strike-psyduck-v",
-      nameEn: "Psyduck V",
-      localId: "062/100",
-      setId: "FST",
-      setNameEn: "Fusion Strike",
-      rarity: "Rare",
-      language: "Japanese",
-      tcgPlayerId: "441629",
-    }),
-    // The "quick-expiry test auctions" section (below) originally had three
-    // listings whose tcgPlayerId/set/number didn't match any of the cards
-    // above. Two of them — Psyduck (Base Set) and Gyarados VMAX (Vivid
-    // Voltage), the two catalog rows below — get their own new catalog rows
-    // rather than silently pointing at the wrong card's identity now that
-    // identity is normalized. The third (the 7-minute test auction,
-    // auctionCard10, originally labeled "Starmie GX" with a stray
-    // tcgPlayerId that actually belonged to Shuckle) has set/card-number
-    // data that matches the existing starmieGxEn row exactly, so it's
-    // re-pointed at starmieGxEn instead, dropping the stray tcgPlayerId.
-    psyduckBaseSet: await upsertPokemonCard({
-      externalId: "mock-base-set-psyduck",
-      nameEn: "Psyduck",
-      localId: "053/102",
-      setId: "BS",
-      setNameEn: "Base Set",
-      rarity: "Common",
-      language: "English",
-      tcgPlayerId: "88900",
-    }),
-    gyaradosVmaxVividVoltage: await upsertPokemonCard({
-      externalId: "mock-vivid-voltage-gyarados-vmax",
-      nameEn: "Gyarados VMAX",
-      localId: "022/185",
-      setId: "VIV",
-      setNameEn: "Vivid Voltage",
-      rarity: "Ultra Rare",
-      language: "English",
-      tcgPlayerId: "246800",
-    }),
-  };
-
-  console.log("✅ Pokémon catalog created:", Object.keys(pokemonCatalog).length, "cards");
+  console.log("✅ Using", Object.keys(pokemonCatalog).length, "real Pokémon catalog cards for mock listings");
 
   // Ash’s Cards
   // Create listings (use create() so we can capture ids easily)
