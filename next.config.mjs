@@ -52,7 +52,9 @@ const nextConfig = {
       // Supabase Storage is the only external image host (matches
       // images.remotePatterns above); data:/blob: cover next/image
       // placeholders and any client-side blob previews.
-      "img-src 'self' data: blob: https://oxfclrahdwnlbrszejik.supabase.co",
+      // tcgdex (Pokémon) and riftcodex's CDN (Riftbound) serve the official
+      // catalog card images shown next to scans on /admin/ingest.
+      "img-src 'self' data: blob: https://oxfclrahdwnlbrszejik.supabase.co https://assets.tcgdex.net https://cmsassets.rgpub.io",
       // next/font/google self-hosts fonts at build time — no external
       // font-src needed (see src/app/layout.tsx).
       "font-src 'self' data:",

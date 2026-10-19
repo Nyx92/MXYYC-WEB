@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Container, Typography, Card, CardActionArea, CardContent, Chip, Box, CircularProgress, Alert } from "@mui/material";
+import { Container, Typography, Card, CardActionArea, CardContent, Chip, Box, CircularProgress, Alert, FormControlLabel, Switch } from "@mui/material";
 
 interface Batch {
   id: string;
@@ -17,13 +17,14 @@ interface Batch {
 export default function IngestBatchList() {
   const [batches, setBatches] = useState<Batch[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showClosed, setShowClosed] = useState(false);
 
   useEffect(() => {
-    fetch("/api/admin/ingest/batches")
+    fetch(`/api/admin/ingest/batches${showClosed ? "?closed=1" : ""}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Could not load batches"))))
       .then((d) => setBatches(d.batches))
       .catch((e) => setError(e.message));
-  }, []);
+  }, [showClosed]);
 
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
@@ -31,9 +32,16 @@ export default function IngestBatchList() {
       <Typography color="text.secondary" sx={{ mb: 3, fontSize: 14 }}>
         Cards scanned with the identifier. Review each batch, then publish the approved cards for sale.
       </Typography>
+      <FormControlLabel
+        control={<Switch size="small" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} />}
+        label="Show closed batches"
+        sx={{ mb: 1 }}
+      />
       {error && <Alert severity="error">{error}</Alert>}
       {!batches && !error && <CircularProgress />}
-      {batches?.length === 0 && <Alert severity="info">No scan batches yet. Run the identifier with --publish to send one.</Alert>}
+      {batches?.length === 0 && (
+        <Alert severity="info">{showClosed ? "No scan batches yet." : "No open batches."} Run the identifier with --publish to send one.</Alert>
+      )}
       <Box sx={{ display: "grid", gap: 1.5 }}>
         {batches?.map((b) => (
           <Card key={b.id} variant="outlined">
@@ -45,6 +53,7 @@ export default function IngestBatchList() {
                     {b.game === "POKEMON" ? "Pokémon" : "Riftbound"} · {new Date(b.createdAt).toLocaleString("en-SG")}
                   </Typography>
                 </Box>
+                {b.status === "CLOSED" && <Chip variant="outlined" label="Closed" />}
                 {(b.counts.PENDING ?? 0) > 0 && <Chip color="warning" label={`${b.counts.PENDING} to review`} />}
                 {(b.counts.APPROVED ?? 0) > 0 && <Chip color="info" label={`${b.counts.APPROVED} approved`} />}
                 {(b.counts.PUBLISHED ?? 0) > 0 && <Chip color="success" label={`${b.counts.PUBLISHED} listed`} />}

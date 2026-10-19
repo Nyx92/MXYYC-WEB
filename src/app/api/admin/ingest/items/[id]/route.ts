@@ -8,7 +8,7 @@ import {
   findCatalogByTcgPlayerId,
   ingestItemInclude,
   latestRawPriceCents,
-  serializeIngestItem,
+  serializeIngestItems,
   suggestPriceCents,
   type IngestGame,
 } from "@/lib/ingest";
@@ -103,5 +103,6 @@ export async function PATCH(req: Request, props: { params: Promise<{ id: string 
     return NextResponse.json({ error: "This card was just listed — reload the page." }, { status: 409 });
   }
   const updated = await prisma.ingestItem.findUniqueOrThrow({ where: { id }, include: ingestItemInclude });
-  return NextResponse.json({ item: serializeIngestItem(updated) });
+  const [serialized] = await serializeIngestItems([updated]);
+  return NextResponse.json({ item: serialized });
 }

@@ -231,7 +231,9 @@ admin      ── "Publish approved" ──► Listing (forSale, owner INGEST_OW
 - **Photos**: front and back scans, compressed to WebP in Supabase Storage under `card-images/ingest/`. They become the listing photos.
 - **Price**: the latest RAW (Near Mint) price in `PriceHistory` for the matched card, rounded **up** to the next S$0.50 (minimum S$1.00) — no JustTCG call. Cards with no price yet stay unpublished until the admin types one.
 - **Condition**: Near Mint by default; the admin can change it per card.
-- **Review page** (`/admin/ingest`, "Card Intake" in the admin menu): "Approve all confident" approves the cards the identifier was sure about; the rest show their top candidates, or take a TCGPlayer ID. Rejected cards are never listed.
+- **Review page** (`/admin/ingest`, "Card Intake" in the admin menu): each scan is shown next to the official image of the matched card (tcgdex for Pokémon, riftcodex for Riftbound — linked, not stored; "No image" when the source has none). "Approve all perfect & high" approves the cards the identifier was sure about. For the rest, "Wrong card? Choose the correct one" lists the candidates with their images, or "Not in the list? Enter its TCGPlayer ID". Rejected cards are never listed.
+- **After publishing**: the **Listed** tab shows each listing's live state — For sale, Sold (the owner is no longer the ingest account), In auction, Collected. Ingest records are kept as the history of where a listing came from; never delete their photos, the listing uses the same files.
+- **Close batch** hides a finished batch from the list ("Show closed batches" brings it back). Nothing is deleted; scans sent later under the same name start a new open batch.
 - **Setup**: set `INGEST_API_TOKEN` (long random string) here and as `MXYYC_INGEST_TOKEN` in the identifier's `.env`, with `MXYYC_API_URL` pointing at this site. The owner account (`INGEST_OWNER_EMAIL`) must exist.
 
 ## Stripe setup

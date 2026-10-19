@@ -29,6 +29,8 @@ import { POST as ingestItem } from "@/app/api/admin/ingest/items/route";
 import { PATCH as editItem } from "@/app/api/admin/ingest/items/[id]/route";
 import { POST as publishBatch } from "@/app/api/admin/ingest/batches/[id]/publish/route";
 import { POST as approveConfident } from "@/app/api/admin/ingest/batches/[id]/approve-confident/route";
+import { GET as getBatch, PATCH as patchBatch } from "@/app/api/admin/ingest/batches/[id]/route";
+import { GET as listBatches } from "@/app/api/admin/ingest/batches/route";
 
 const TOKEN = "test-ingest-token";
 let scanN = 0;
@@ -101,11 +103,13 @@ describe("POST /api/admin/ingest/items", () => {
     expect(await prisma.ingestItem.count()).toBe(1);
   });
 
-  it("puts scans with the same batch name in one open batch", async () => {
-    await ingestItem(scan({}));
+  it("puts scans with the same batch name in one open batch, even when they arrive at the same time", async () => {
+    // The identifier uploads several cards at once; without the server-side lock
+    // 12 simultaneous first uploads created 9-12 separate batches.
+    await Promise.all(Array.from({ length: 12 }, () => ingestItem(scan({}))));
     await ingestItem(scan({}));
     expect(await prisma.ingestBatch.count()).toBe(1);
-    expect(await prisma.ingestItem.count()).toBe(2);
+    expect(await prisma.ingestItem.count()).toBe(13);
   });
 });
 
@@ -169,5 +173,51 @@ describe("admin review and publish", () => {
     const item = await prisma.ingestItem.findFirstOrThrow();
     expect((await patch(item.id, { status: "REJECTED" })).status).toBe(403);
     expect((await publish(item.batchId)).status).toBe(403);
+  });
+
+  it("shows official images for the card and its candidates, and the listing's live state", async () => {
+    const owner = await createUser({ email: "admin@pokemon.com" });
+    const admin = await createUser({ role: "admin" });
+    asAdmin(admin.id);
+    const card = await priced("me01-016", [1000]);
+    await prisma.pokemonCardCatalog.update({ where: { id: card.id }, data: { imageUrl: "https://assets.tcgdex.net/en/me/me01/016/high.webp" } });
+    const other = await createCatalogCard({ externalId: "SV4s-016", imageUrl: "https://assets.tcgdex.net/ja/SV/SV4s/016/high.webp" });
+    await ingestItem(scan({ match: "me01-016", candidates: JSON.stringify([{ id: "SV4s-016", score: 3 }]) }));
+    const item = await prisma.ingestItem.findFirstOrThrow();
+
+    const view = async () => (await (await getBatch(req("/x"), idParams(item.batchId))).json()).items[0];
+    const before = await view();
+    expect(before.card.imageUrl).toBe("https://assets.tcgdex.net/en/me/me01/016/high.webp");
+    expect(before.candidates).toEqual([expect.objectContaining({ catalogId: other.id, imageUrl: "https://assets.tcgdex.net/ja/SV/SV4s/016/high.webp" })]);
+    expect(before.listingState).toBeNull();
+
+    await patch(item.id, { status: "APPROVED" });
+    await publish(item.batchId);
+    expect((await view()).listingState).toBe("For sale");
+
+    // A buyer's purchase moves the listing to them.
+    const buyer = await createUser();
+    const listing = await prisma.listing.findFirstOrThrow();
+    expect(listing.ownerId).toBe(owner.id);
+    await prisma.listing.update({ where: { id: listing.id }, data: { ownerId: buyer.id, forSale: false } });
+    expect((await view()).listingState).toBe("Sold");
+  });
+
+  it("closing a batch hides it from the list until 'show closed', and keeps its items", async () => {
+    const admin = await createUser({ role: "admin" });
+    asAdmin(admin.id);
+    await ingestItem(scan({}));
+    const { batchId } = await prisma.ingestItem.findFirstOrThrow();
+    const names = async (q = "") => (await (await listBatches(req(`/api/admin/ingest/batches${q}`))).json()).batches.map((b: { id: string }) => b.id);
+
+    expect(await names()).toEqual([batchId]);
+    expect((await patchBatch(req("/x", { status: "CLOSED" }, { method: "PATCH" }), idParams(batchId))).status).toBe(200);
+    expect(await names()).toEqual([]);
+    expect(await names("?closed=1")).toEqual([batchId]);
+    expect(await prisma.ingestItem.count()).toBe(1);
+
+    // A new scan under the same name starts a new open batch.
+    await ingestItem(scan({}));
+    expect(await prisma.ingestBatch.count({ where: { status: "OPEN" } })).toBe(1);
   });
 });

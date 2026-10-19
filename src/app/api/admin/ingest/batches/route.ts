@@ -2,12 +2,20 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { adminOnly } from "@/lib/ingest";
 
-/** GET /api/admin/ingest/batches — admin: newest 50 scan batches with item counts per status. */
-export async function GET() {
+/**
+ * GET /api/admin/ingest/batches[?closed=1] — admin: newest 50 open scan
+ * batches (closed ones too with ?closed=1), with item counts per status.
+ */
+export async function GET(req: Request) {
   const denied = await adminOnly();
   if (denied) return denied;
 
-  const batches = await prisma.ingestBatch.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+  const includeClosed = new URL(req.url).searchParams.get("closed") === "1";
+  const batches = await prisma.ingestBatch.findMany({
+    where: includeClosed ? {} : { status: "OPEN" },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
   const counts = await prisma.ingestItem.groupBy({
     by: ["batchId", "status"],
     where: { batchId: { in: batches.map((b) => b.id) } },

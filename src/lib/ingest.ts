@@ -122,35 +122,73 @@ export async function findCatalogByTcgPlayerId(game: IngestGame, tcgPlayerId: st
 
 export const catalogField = (game: string) => (game === "POKEMON" ? "pokemonCardId" : "riftboundCardId");
 
-/** Shape the review page reads. */
-export function serializeIngestItem(item: Prisma.IngestItemGetPayload<{ include: typeof ingestItemInclude }>) {
-  const card = item.pokemonCard
-    ? { catalogId: item.pokemonCard.id, label: pokemonLabel(item.pokemonCard), tcgPlayerId: item.pokemonCard.tcgPlayerId }
-    : item.riftboundCard
-      ? { catalogId: item.riftboundCard.id, label: riftboundLabel(item.riftboundCard), tcgPlayerId: item.riftboundCard.tcgPlayerId }
-      : null;
-  return {
-    id: item.id,
-    status: item.status,
-    confidence: item.confidence,
-    method: item.method,
-    sourceFile: item.sourceFile,
-    game: item.game,
-    imageUrls: item.imageUrls,
-    card,
-    candidates: item.candidates as unknown as (CatalogRef & { score?: number })[],
-    ocr: item.ocr,
-    condition: item.condition,
-    marketPrice: item.marketPriceCents != null ? centsToDollars(item.marketPriceCents) : null,
-    price: item.priceCents != null ? centsToDollars(item.priceCents) : null,
-    listingId: item.listingId,
-  };
+export const ingestItemInclude = {
+  pokemonCard: {
+    select: { id: true, nameEn: true, setNameEn: true, printedNumber: true, localId: true, language: true, tcgPlayerId: true, imageUrl: true },
+  },
+  riftboundCard: {
+    select: { id: true, name: true, setLabel: true, printedNumber: true, collectorNumber: true, tcgPlayerId: true, imageUrl: true },
+  },
+  listing: { select: { forSale: true, inAuction: true, ownerId: true, collectedAt: true } },
+} satisfies Prisma.IngestItemInclude;
+
+type IngestItemRow = Prisma.IngestItemGetPayload<{ include: typeof ingestItemInclude }>;
+
+/**
+ * What happened to a published item's listing since: the ingest record stays
+ * "PUBLISHED" forever, this is the listing's live state. A listing whose
+ * owner is no longer the ingest account was bought.
+ */
+export function listingState(listing: IngestItemRow["listing"], ingestOwnerId: string | null) {
+  if (!listing) return null;
+  if (listing.collectedAt) return "Collected";
+  if (ingestOwnerId && listing.ownerId !== ingestOwnerId) return "Sold";
+  if (listing.inAuction) return "In auction";
+  return listing.forSale ? "For sale" : "Not for sale";
 }
 
-export const ingestItemInclude = {
-  pokemonCard: { select: { id: true, nameEn: true, setNameEn: true, printedNumber: true, localId: true, language: true, tcgPlayerId: true } },
-  riftboundCard: { select: { id: true, name: true, setLabel: true, printedNumber: true, collectorNumber: true, tcgPlayerId: true } },
-} satisfies Prisma.IngestItemInclude;
+/**
+ * Shape the review page reads. Candidate images are looked up here (they
+ * are not stored with the item), so the reviewer can compare each official
+ * card image with the scan.
+ */
+export async function serializeIngestItems(items: IngestItemRow[], db: Db = prisma) {
+  const candidatesOf = (i: IngestItemRow) => (i.candidates as unknown as (CatalogRef & { score?: number | null })[]) ?? [];
+  const ids = (game: string) => [...new Set(items.filter((i) => i.game === game).flatMap((i) => candidatesOf(i).map((c) => c.catalogId)))];
+  const pokemonIds = ids("POKEMON");
+  const riftboundIds = ids("RIFTBOUND");
+  const [pokemon, riftbound, owner] = await Promise.all([
+    pokemonIds.length ? db.pokemonCardCatalog.findMany({ where: { id: { in: pokemonIds } }, select: { id: true, imageUrl: true } }) : [],
+    riftboundIds.length ? db.riftboundCardCatalog.findMany({ where: { id: { in: riftboundIds } }, select: { id: true, imageUrl: true } }) : [],
+    db.user.findUnique({ where: { email: ingestOwnerEmail() }, select: { id: true } }),
+  ]);
+  const imageOf = new Map<string, string | null>([...pokemon, ...riftbound].map((c) => [c.id, c.imageUrl || null]));
+
+  return items.map((item) => {
+    const card = item.pokemonCard
+      ? { catalogId: item.pokemonCard.id, label: pokemonLabel(item.pokemonCard), tcgPlayerId: item.pokemonCard.tcgPlayerId, imageUrl: item.pokemonCard.imageUrl || null }
+      : item.riftboundCard
+        ? { catalogId: item.riftboundCard.id, label: riftboundLabel(item.riftboundCard), tcgPlayerId: item.riftboundCard.tcgPlayerId, imageUrl: item.riftboundCard.imageUrl || null }
+        : null;
+    return {
+      id: item.id,
+      status: item.status,
+      confidence: item.confidence,
+      method: item.method,
+      sourceFile: item.sourceFile,
+      game: item.game,
+      imageUrls: item.imageUrls,
+      card,
+      candidates: candidatesOf(item).map((c) => ({ ...c, imageUrl: imageOf.get(c.catalogId) ?? null })),
+      ocr: item.ocr,
+      condition: item.condition,
+      marketPrice: item.marketPriceCents != null ? centsToDollars(item.marketPriceCents) : null,
+      price: item.priceCents != null ? centsToDollars(item.priceCents) : null,
+      listingId: item.listingId,
+      listingState: listingState(item.listing, owner?.id ?? null),
+    };
+  });
+}
 
 export type PublishOutcome = { itemId: string; listingId?: string; skipped?: string };
 

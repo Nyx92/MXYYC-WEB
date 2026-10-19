@@ -1,7 +1,8 @@
 "use client";
 /**
  * Review one scan batch. For each scanned card the admin can:
- *  - pick the right card (from the identifier's candidates, or by TCGPlayer id),
+ *  - compare the scan with the official image of the matched card,
+ *  - pick a different card (a candidate, or any card by TCGPlayer id),
  *  - set the condition and the price (pre-filled from the market price),
  *  - approve or reject it.
  * "Publish approved" turns approved cards that have a price into listings.
@@ -15,7 +16,7 @@ import {
 import { RAW_GRADES } from "@/constants/grades";
 
 type Status = "PENDING" | "APPROVED" | "REJECTED" | "PUBLISHED";
-interface CardRef { catalogId: string; label: string; score?: number | null; tcgPlayerId?: string | null }
+interface CardRef { catalogId: string; label: string; score?: number | null; tcgPlayerId?: string | null; imageUrl?: string | null }
 interface Item {
   id: string;
   status: Status;
@@ -30,12 +31,16 @@ interface Item {
   marketPrice: number | null;
   price: number | null;
   listingId: string | null;
+  listingState: string | null;
 }
-interface Batch { id: string; name: string; game: "POKEMON" | "RIFTBOUND" }
+interface Batch { id: string; name: string; game: "POKEMON" | "RIFTBOUND"; status: "OPEN" | "CLOSED" }
 
 const CONFIDENT = ["perfect", "high"];
 const CONF_COLOR: Record<string, "success" | "info" | "warning" | "error" | "default"> = {
   perfect: "success", high: "info", medium: "warning", low: "error", none: "error",
+};
+const STATE_COLOR: Record<string, "success" | "info" | "warning" | "default"> = {
+  "For sale": "success", Sold: "info", Collected: "default", "In auction": "warning", "Not for sale": "default",
 };
 const TABS: { key: Status | "ALL"; label: string }[] = [
   { key: "PENDING", label: "To review" },
@@ -44,6 +49,23 @@ const TABS: { key: Status | "ALL"; label: string }[] = [
   { key: "REJECTED", label: "Rejected" },
   { key: "ALL", label: "All" },
 ];
+
+/** An image that shows "No image" instead of a broken icon (some catalog cards have none). */
+function CardImage({ src, alt, width, href }: { src?: string | null; alt: string; width: number; href?: string }) {
+  const [failed, setFailed] = useState(false);
+  const box = { width, height: Math.round(width * 1.4), borderRadius: 1, flexShrink: 0 };
+  if (!src || failed) {
+    return (
+      <Box sx={{ ...box, bgcolor: "#f3f4f6", border: "1px dashed #d1d5db", display: "grid", placeItems: "center" }}>
+        <Typography fontSize={11} color="text.secondary">No image</Typography>
+      </Box>
+    );
+  }
+  // Plain img: admin-only thumbnails straight from storage / the catalog CDNs, no optimizer needed.
+  // eslint-disable-next-line @next/next/no-img-element
+  const img = <img src={src} alt={alt} width={width} onError={() => setFailed(true)} style={{ borderRadius: 6, display: "block" }} />;
+  return href ? <a href={href} target="_blank" rel="noreferrer">{img}</a> : img;
+}
 
 function ItemRow({ item, onChange }: { item: Item; onChange: (next: Item) => void }) {
   const [busy, setBusy] = useState(false);
@@ -73,7 +95,6 @@ function ItemRow({ item, onChange }: { item: Item; onChange: (next: Item) => voi
     }
   };
 
-  const options = [...(item.card ? [item.card] : []), ...item.candidates];
   const ocr = item.ocr ?? {};
   const read = ["name", "name_ja", "set_code", "card_number", "hp", "illustrator", "language", "set_id", "artist"]
     .filter((k) => ocr[k] != null && ocr[k] !== "")
@@ -82,47 +103,72 @@ function ItemRow({ item, onChange }: { item: Item; onChange: (next: Item) => voi
 
   return (
     <Paper variant="outlined" sx={{ p: 2, display: "flex", gap: 2, flexWrap: { xs: "wrap", md: "nowrap" }, opacity: busy ? 0.6 : 1 }}>
-      <Box sx={{ display: "flex", gap: 1, flexShrink: 0 }}>
-        {item.imageUrls.map((url, i) => (
-          <a key={url} href={url} target="_blank" rel="noreferrer">
-            {/* Plain img: admin-only thumbnails straight from storage, no optimizer needed. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={url} alt={i === 0 ? "Front scan" : "Back scan"} width={i === 0 ? 110 : 70} style={{ borderRadius: 6, display: "block" }} />
-          </a>
-        ))}
+      {/* Scans and the official image of the selected card, side by side. */}
+      <Box sx={{ display: "flex", gap: 1.5, flexShrink: 0, alignItems: "flex-start" }}>
+        <Box>
+          <Typography fontSize={11} color="text.secondary" sx={{ mb: 0.5 }}>Your scan</Typography>
+          <Box sx={{ display: "flex", gap: 0.75 }}>
+            {item.imageUrls.map((url, i) => (
+              <CardImage key={url} src={url} href={url} alt={i === 0 ? "Front scan" : "Back scan"} width={i === 0 ? 120 : 64} />
+            ))}
+          </Box>
+        </Box>
+        <Box>
+          <Typography fontSize={11} color="text.secondary" sx={{ mb: 0.5 }}>Matched card</Typography>
+          <CardImage src={item.card?.imageUrl} href={item.card?.imageUrl ?? undefined} alt={item.card?.label ?? "No card"} width={120} />
+        </Box>
       </Box>
 
-      <Box sx={{ flex: 1, minWidth: 260, display: "grid", gap: 1 }}>
+      <Box sx={{ flex: 1, minWidth: 260, display: "grid", gap: 1, alignContent: "start" }}>
         <Box sx={{ display: "flex", gap: 1, alignItems: "center", flexWrap: "wrap" }}>
           <Chip size="small" color={CONF_COLOR[item.confidence] ?? "default"} label={item.confidence} />
           {item.method === "vision" && <Chip size="small" variant="outlined" label="vision" />}
+          {item.listingState && <Chip size="small" color={STATE_COLOR[item.listingState] ?? "default"} label={item.listingState} />}
           <Typography fontSize={12} color="text.secondary">{item.sourceFile}</Typography>
           {item.listingId && (
             <Button size="small" component={Link} href={`/cards/${item.listingId}`}>View listing</Button>
           )}
         </Box>
-        <TextField
-          select
-          size="small"
-          label="Card"
-          value={item.card?.catalogId ?? ""}
-          disabled={locked || busy}
-          onChange={(e) => patch({ catalogId: e.target.value })}
-          helperText={item.card ? undefined : "Not identified — choose a candidate or enter the TCGPlayer ID"}
-          error={!item.card}
-        >
-          {options.length === 0 && <MenuItem value="" disabled>No candidates</MenuItem>}
-          {options.map((o) => (
-            <MenuItem key={o.catalogId} value={o.catalogId}>{o.label}</MenuItem>
-          ))}
-        </TextField>
+        <Typography fontWeight={700} color={item.card ? "text.primary" : "error"}>
+          {item.card?.label ?? "Not identified — choose the correct card below"}
+        </Typography>
+
         {!locked && (
-          <Box sx={{ display: "flex", gap: 1 }}>
-            <TextField size="small" label="TCGPlayer ID" value={tcgId} onChange={(e) => setTcgId(e.target.value)} sx={{ width: 160 }} />
-            <Button size="small" disabled={!tcgId.trim() || busy} onClick={async () => (await patch({ tcgPlayerId: tcgId })) && setTcgId("")}>
-              Use this card
-            </Button>
-          </Box>
+          <>
+            {item.candidates.length > 0 && (
+              <>
+                <Typography fontSize={13} fontWeight={600} sx={{ mt: 0.5 }}>
+                  {item.card ? "Wrong card? Choose the correct one:" : "Choose the correct card:"}
+                </Typography>
+                <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                  {item.candidates.map((c) => (
+                    <Paper
+                      key={c.catalogId}
+                      variant="outlined"
+                      component="button"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => patch({ catalogId: c.catalogId })}
+                      title={`Use ${c.label}`}
+                      sx={{ p: 0.75, width: 112, cursor: "pointer", textAlign: "left", bgcolor: "#fff", "&:hover": { borderColor: "primary.main" } }}
+                    >
+                      <CardImage src={c.imageUrl} alt={c.label} width={98} />
+                      <Typography fontSize={11} sx={{ mt: 0.5, lineHeight: 1.25 }}>{c.label}</Typography>
+                    </Paper>
+                  ))}
+                </Box>
+              </>
+            )}
+            <Typography fontSize={13} fontWeight={600} sx={{ mt: 0.5 }}>
+              {item.candidates.length > 0 ? "Not in the list? Enter its TCGPlayer ID:" : "Wrong or missing card? Enter its TCGPlayer ID:"}
+            </Typography>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <TextField size="small" label="TCGPlayer ID" value={tcgId} onChange={(e) => setTcgId(e.target.value)} sx={{ width: 160 }} />
+              <Button size="small" variant="outlined" disabled={!tcgId.trim() || busy} onClick={async () => (await patch({ tcgPlayerId: tcgId })) && setTcgId("")}>
+                Use this card
+              </Button>
+            </Box>
+          </>
         )}
         {read && <Typography fontSize={12} color="text.secondary">Read from scan: {read}</Typography>}
         {error && <Alert severity="error" sx={{ py: 0 }}>{error}</Alert>}
@@ -197,7 +243,7 @@ export default function IngestBatchReview({ batchId }: { batchId: string }) {
     setBusy(true);
     const res = await fetch(`/api/admin/ingest/batches/${batchId}/approve-confident`, { method: "POST" });
     const data = await res.json();
-    setMessage(res.ok ? { type: "success", text: `Approved ${data.approved} confident cards.` } : { type: "error", text: data.error });
+    setMessage(res.ok ? { type: "success", text: `Approved ${data.approved} perfect & high cards.` } : { type: "error", text: data.error });
     await load();
     setBusy(false);
   };
@@ -225,6 +271,18 @@ export default function IngestBatchReview({ batchId }: { batchId: string }) {
     setBusy(false);
   };
 
+  const setBatchStatus = async (status: "OPEN" | "CLOSED") => {
+    setBusy(true);
+    const res = await fetch(`/api/admin/ingest/batches/${batchId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) setMessage({ type: "error", text: (await res.json()).error || "Could not update the batch" });
+    await load();
+    setBusy(false);
+  };
+
   if (!items) {
     return (
       <Container sx={{ py: 4 }}>
@@ -234,25 +292,38 @@ export default function IngestBatchReview({ batchId }: { batchId: string }) {
   }
 
   const shown = tab === "ALL" ? items : items.filter((i) => i.status === tab);
+  const closed = batch?.status === "CLOSED";
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
       <Button component={Link} href="/admin/ingest" size="small" sx={{ mb: 1 }}>← All batches</Button>
-      <Typography variant="h5" fontWeight={800}>{batch?.name}</Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+        <Typography variant="h5" fontWeight={800}>{batch?.name}</Typography>
+        {closed && <Chip size="small" label="Closed" />}
+        <Box sx={{ flex: 1 }} />
+        <Button size="small" disabled={busy} onClick={() => setBatchStatus(closed ? "OPEN" : "CLOSED")}>
+          {closed ? "Reopen batch" : "Close batch"}
+        </Button>
+      </Box>
       <Typography color="text.secondary" fontSize={14} sx={{ mb: 2 }}>
         {batch?.game === "POKEMON" ? "Pokémon" : "Riftbound"} · {items.length} scanned cards. Prices are suggested from the latest market price
         (rounded up to S$0.50) — check them before publishing.
+        {closed && " Closed batches are hidden from the Card Intake list; everything here still works."}
       </Typography>
 
-      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 2 }}>
+      <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", alignItems: "center" }}>
         <Button variant="outlined" disabled={busy || confidentPending === 0} onClick={approveConfident}>
-          Approve all confident ({confidentPending})
+          Approve all perfect &amp; high ({confidentPending})
         </Button>
         <Button variant="contained" color="success" disabled={busy || readyToPublish === 0} onClick={publish}>
           Publish approved ({readyToPublish})
         </Button>
         {busy && <CircularProgress size={24} />}
       </Box>
+      <Typography fontSize={12} color="text.secondary" sx={{ mt: 0.75, mb: 2 }}>
+        &ldquo;Approve all&rdquo; approves only cards marked <b>perfect</b> or <b>high</b>. Check <b>medium</b> and <b>low</b> cards yourself.
+        &ldquo;Publish&rdquo; lists approved cards that have a price.
+      </Typography>
       {approvedNoPrice > 0 && (
         <Alert severity="warning" sx={{ mb: 2 }}>
           {approvedNoPrice === 1 ? "1 approved card has" : `${approvedNoPrice} approved cards have`} no price and will not be published until you set one.

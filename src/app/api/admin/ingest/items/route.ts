@@ -116,9 +116,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Could not store the scan images." }, { status: 400 });
   }
 
-  const batch =
-    (await prisma.ingestBatch.findFirst({ where: { name: batchName, game: g, status: "OPEN" }, orderBy: { createdAt: "desc" } })) ??
-    (await prisma.ingestBatch.create({ data: { name: batchName, game: g } }));
+  // The identifier sends several cards at once: without the lock, two
+  // requests can both see "no open batch" and each create one.
+  const batch = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ingest-batch:${g}:${batchName}`}))`;
+    return (
+      (await tx.ingestBatch.findFirst({ where: { name: batchName, game: g, status: "OPEN" }, orderBy: { createdAt: "desc" } })) ??
+      (await tx.ingestBatch.create({ data: { name: batchName, game: g } }))
+    );
+  });
 
   try {
     const item = await prisma.ingestItem.create({
