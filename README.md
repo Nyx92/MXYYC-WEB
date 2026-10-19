@@ -188,9 +188,14 @@ pnpm update-catalog
 
 It does everything in order:
 
-1. Runs `pnpm sync:pokemon` in tcg-index-sync. This writes a new Pokémon delta file.
-2. Imports that file into the catalog with `pnpm import:catalog-delta`.
-3. Does the same for Riftbound.
+1. Imports Pokémon delta files that are still pending from earlier runs.
+2. Runs `pnpm sync:pokemon` in tcg-index-sync. This writes a new Pokémon delta file.
+3. Imports that file into the catalog with `pnpm import:catalog-delta`.
+4. Does the same for Riftbound.
+
+tcg-index-sync lists every delta file that is not yet imported in
+`state/<game>-pending-deltas.txt`. The script removes a file from that list
+only after its import succeeds.
 
 To update one game only, run `pnpm update-catalog pokemon` or `pnpm update-catalog riftbound`.
 
@@ -207,9 +212,10 @@ How it behaves:
 - The import only adds and updates cards. It never deletes cards, and it skips
   cards without a `tcgPlayerId`. You can run it again with no risk.
 - If a sync finds no changes, the import does nothing.
-- If an import fails, the script stops and prints the exact retry command
-  (`pnpm import:catalog-delta <file>`). Use that command. Do not run the sync
-  again, because the sync has already recorded those cards as done.
+- If an import fails, the script stops. Fix the error, then run
+  `pnpm update-catalog` again. It imports the failed file first.
+- If someone ran a sync in tcg-index-sync without an import, the next
+  `pnpm update-catalog` imports that delta too.
 - After an import, you do not need to do anything more. The pricing crons below
   get prices for the new cards (backfill: once per card; refresh: daily for
   listed cards, weekly for the others).

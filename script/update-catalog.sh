@@ -20,27 +20,35 @@ case "${1:-all}" in
   *) echo "Usage: pnpm update-catalog [pokemon|riftbound]" >&2; exit 1 ;;
 esac
 
+# Each sync appends the delta files it writes to state/<game>-pending-deltas.txt
+# before it moves its own state forward. Import every pending file, oldest
+# first, and remove each one only after its import succeeds — so a failed,
+# interrupted or skipped import is retried on the next run. Re-importing a
+# file is safe: the importer upserts.
+import_pending() {
+  local game=$1 ledger="$SYNC_DIR/state/$1-pending-deltas.txt" rel pending
+  [ -s "$ledger" ] || return 0
+  mapfile -t pending < "$ledger"
+  for rel in "${pending[@]}"; do
+    [ -n "$rel" ] || continue
+    echo "📥 [$game] Importing $rel ..."
+    if ! pnpm import:catalog-delta "$SYNC_DIR/$rel"; then
+      echo "" >&2
+      echo "❌ [$game] Import failed. It stays pending — fix the error, then run" >&2
+      echo "   pnpm update-catalog again." >&2
+      exit 1
+    fi
+    { grep -vxF -- "$rel" "$ledger" || true; } > "$ledger.tmp"
+    mv "$ledger.tmp" "$ledger"
+  done
+}
+
 for game in "${GAMES[@]}"; do
   echo ""
+  import_pending "$game"
   echo "🔄 [$game] Syncing in $SYNC_DIR ..."
-  before=$(ls -t "$SYNC_DIR"/output/"$game"-delta-*.json 2>/dev/null | head -1 || true)
   (cd "$SYNC_DIR" && pnpm "sync:$game")
-  delta=$(ls -t "$SYNC_DIR"/output/"$game"-delta-*.json 2>/dev/null | head -1 || true)
-
-  if [ -z "$delta" ] || [ "$delta" = "$before" ]; then
-    echo "ℹ️  [$game] The sync wrote no new delta file — nothing to import."
-    continue
-  fi
-
-  echo "📥 [$game] Importing $delta ..."
-  if ! pnpm import:catalog-delta "$delta"; then
-    # The sync has already moved its state forward, so the next sync will not
-    # produce these cards again — retry this exact file instead.
-    echo "" >&2
-    echo "❌ [$game] Import failed. Fix the error, then retry with:" >&2
-    echo "   pnpm import:catalog-delta $delta" >&2
-    exit 1
-  fi
+  import_pending "$game"
 done
 
 echo ""
