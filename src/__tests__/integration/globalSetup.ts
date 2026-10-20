@@ -9,4 +9,5 @@ export default function setup() {
   const env = { ...process.env, DATABASE_URL: url, DIRECT_URL: url };
   execFileSync("pnpm", ["exec", "prisma", "db", "push", "--force-reset", "--skip-generate"], { stdio: "inherit", env });
   execFileSync("pnpm", ["exec", "prisma", "db", "execute", "--schema", "prisma/schema.prisma", "--file", "prisma/sql/protect-price-history.sql"], { stdio: "inherit", env });
+  execFileSync("pnpm", ["exec", "prisma", "db", "execute", "--schema", "prisma/schema.prisma", "--file", "prisma/sql/enable-rls.sql"], { stdio: "inherit", env });
 }

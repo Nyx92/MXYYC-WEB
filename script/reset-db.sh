@@ -25,6 +25,8 @@ BEFORE=$(pnpm exec tsx prisma/countPreservedTables.ts)
 pnpm exec prisma db push
 # Re-apply the PriceHistory delete block (Prisma does not manage triggers).
 pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/protect-price-history.sql
+# Block the Supabase Data API (new tables from db push start with RLS off).
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/enable-rls.sql
 AFTER=$(pnpm exec tsx prisma/countPreservedTables.ts)
 
 if [ "$BEFORE" != "$AFTER" ]; then

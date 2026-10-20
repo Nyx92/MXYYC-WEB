@@ -164,6 +164,14 @@ pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/prot
 
 The trigger does not stop `DROP TABLE` (for example `prisma db push --force-reset`). Take a backup before every schema push. To delete price rows on purpose, see the instructions at the top of the SQL file.
 
+### Row-Level Security
+
+Every table in `public` has RLS on with no policies ([`prisma/sql/enable-rls.sql`](prisma/sql/enable-rls.sql)). This blocks the Supabase Data API (`anon` / `authenticated` keys). Prisma connects as the table owner, so the app is not affected. `db push` creates new tables with RLS off — `script/reset-db.sh` re-applies the file, and after a manual push run:
+
+```bash
+pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/sql/enable-rls.sql
+```
+
 ---
 
 ### Card catalog (Pokémon / Riftbound)
