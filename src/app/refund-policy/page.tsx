@@ -2,15 +2,16 @@ import type { Metadata } from "next";
 import LegalPage from "@/app/shared-components/legal/LegalPage";
 
 export const metadata: Metadata = {
-  title: "Refund & Dispute Policy | Pokémon MVP",
-  description: "Refund and dispute policy for MXYYC's Pokémon MVP marketplace.",
+  title: "Refund & Dispute Policy",
+  alternates: { canonical: "/refund-policy" },
+  description: "Refund and dispute policy for the MXYYC Online TCG Store.",
 };
 
 export default function RefundPolicyPage() {
   return (
     <LegalPage title="Refund & Dispute Policy" lastUpdated="13 September 2026">
       <p>
-        Pokémon MVP is a peer-to-peer marketplace: every purchase is a
+        MXYYC Online TCG Store is a peer-to-peer marketplace: every purchase is a
         direct transaction between a buyer and a seller, both of whom are
         independent users of the Service. MXYYC facilitates the listing and
         payment process but is not the seller of any card.

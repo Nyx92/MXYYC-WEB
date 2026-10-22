@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import LegalPage from "@/app/shared-components/legal/LegalPage";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy | Pokémon MVP",
-  description: "Privacy Policy for MXYYC's Pokémon MVP marketplace.",
+  title: "Privacy Policy",
+  alternates: { canonical: "/privacy" },
+  description: "Privacy Policy for the MXYYC Online TCG Store.",
 };
 
 export default function PrivacyPage() {
@@ -12,7 +13,7 @@ export default function PrivacyPage() {
       <p>
         This Privacy Policy explains how MXYYC (&ldquo;we&rdquo;,
         &ldquo;us&rdquo;) collects, uses, and protects your information when
-        you use Pokémon MVP (the &ldquo;Service&rdquo;).
+        you use MXYYC Online TCG Store (the &ldquo;Service&rdquo;).
       </p>
 
       <h2>1. Information We Collect</h2>

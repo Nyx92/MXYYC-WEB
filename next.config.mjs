@@ -83,8 +83,32 @@ const nextConfig = {
     ];
   },
 
+  // ===== REDIRECTS =====
+  // permanent → 308, which Google treats like a 301 and passes ranking on.
+  async redirects() {
+    return [
+      // The old pokemon-mvp.vercel.app domain must not compete with the real
+      // one in search. /api is left alone: Stripe webhooks and crons may
+      // still call that host, and Stripe does not follow redirects.
+      {
+        source: "/:path((?!api/).*)",
+        has: [{ type: "host", value: "pokemon-mvp.vercel.app" }],
+        destination: "https://www.mxyyc.community/:path",
+        permanent: true,
+      },
+      // URLs from the old WooCommerce site that Google still has indexed.
+      { source: "/product-category/pokemon/:path*", destination: "/marketplace?game=POKEMON", permanent: true },
+      { source: "/product-category/:path*", destination: "/marketplace", permanent: true },
+      { source: "/product/:path*", destination: "/marketplace", permanent: true },
+      { source: "/shop/:path*", destination: "/marketplace", permanent: true },
+      { source: "/blog/:path*", destination: "/", permanent: true },
+      { source: "/category/:path*", destination: "/", permanent: true },
+      { source: "/tag/:path*", destination: "/", permanent: true },
+      { source: "/my-account/:path*", destination: "/profile", permanent: true },
+    ];
+  },
+
   // You could later add:
-  // - redirects
   // - env exposure
   // - bundle analyzer
   // - experimental server actions

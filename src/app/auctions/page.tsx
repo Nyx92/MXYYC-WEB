@@ -5,13 +5,11 @@ import { getAuctionsPage } from "@/lib/auctionsQuery";
 import type { AuctionFilterState } from "./AuctionFilterBar";
 import type { AuctionSort } from "@/lib/auctionsQuery";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-
 export const metadata: Metadata = {
-  title: "Live Auctions | Pokémon MVP",
+  title: "Live Auctions",
   description:
     "Bid on rare Pokémon and Riftbound cards. Funds are only charged if your bid wins.",
-  alternates: { canonical: `${SITE_URL}/auctions` },
+  alternates: { canonical: "/auctions" },
 };
 
 // Auction data must reflect the live DB on every visit (bids/endsAt change

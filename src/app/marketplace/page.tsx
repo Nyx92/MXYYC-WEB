@@ -4,18 +4,14 @@ import MarketplacePageShell from "./MarketplacePageShell";
 import { getListingsPage } from "@/lib/listingsQuery";
 import type { MarketplaceFilterState } from "./FilterBar";
 
-// Falls back to localhost only when NEXT_PUBLIC_SITE_URL isn't set (local
-// dev) — same convention as src/app/robots.ts and sitemap.ts.
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-
 export const metadata: Metadata = {
-  title: "Marketplace | Pokémon MVP",
+  title: "Marketplace",
   description:
-    "Browse and buy Pokémon and Riftbound cards for sale on Pokémon MVP's marketplace.",
+    "Browse and buy Pokémon and Riftbound cards for sale in Singapore. Japanese and English singles from trusted sellers.",
   // The ?game=/&setName= deep-link variants (used by the home page carousel's
   // "Browse [Set] Cards" buttons) are the same page pre-filtered, not
   // distinct content — point search engines at the canonical unfiltered URL.
-  alternates: { canonical: `${SITE_URL}/marketplace` },
+  alternates: { canonical: "/marketplace" },
 };
 
 // Card data must reflect the live DB on every visit; do not let this route

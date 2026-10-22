@@ -49,7 +49,7 @@ export default function HomePage({ initialFeatured }: { initialFeatured: Feature
           m: -1,
         }}
       >
-        MXYYC — Pokémon card marketplace
+        MXYYC Online TCG Store — Pokémon and Riftbound cards
       </Box>
 
       {/* Hero Carousel */}

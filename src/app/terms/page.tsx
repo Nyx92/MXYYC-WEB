@@ -2,15 +2,16 @@ import type { Metadata } from "next";
 import LegalPage from "@/app/shared-components/legal/LegalPage";
 
 export const metadata: Metadata = {
-  title: "Terms of Service | Pokémon MVP",
-  description: "Terms of Service for MXYYC's Pokémon MVP marketplace.",
+  title: "Terms of Service",
+  alternates: { canonical: "/terms" },
+  description: "Terms of Service for the MXYYC Online TCG Store.",
 };
 
 export default function TermsPage() {
   return (
     <LegalPage title="Terms of Service" lastUpdated="13 September 2026">
       <p>
-        Welcome to Pokémon MVP (the &ldquo;Service&rdquo;), a marketplace for
+        Welcome to MXYYC Online TCG Store (the &ldquo;Service&rdquo;), a marketplace for
         buying, selling, and auctioning physical Pokémon and Riftbound
         trading cards, operated by MXYYC (&ldquo;MXYYC&rdquo;,
         &ldquo;we&rdquo;, &ldquo;us&rdquo;, or &ldquo;our&rdquo;). By creating
@@ -21,7 +22,7 @@ export default function TermsPage() {
 
       <h2>1. The Service</h2>
       <p>
-        Pokémon MVP is a platform that lets users list physical trading
+        MXYYC Online TCG Store is a platform that lets users list physical trading
         cards for sale, make and accept offers, run and bid in auctions, and
         complete purchases via Stripe. MXYYC does not own, inspect, grade,
         authenticate, or take possession of any card listed on the Service —

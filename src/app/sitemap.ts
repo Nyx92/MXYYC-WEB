@@ -1,24 +1,21 @@
 import type { MetadataRoute } from "next";
 import { prisma } from "@/lib/prisma";
-
-// Same fallback convention as robots.ts — production sets the real env var
-// at deploy time (see pre-launch hardening plan).
-const FALLBACK_BASE_URL = "http://localhost:3001";
-
-function getBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_SITE_URL || FALLBACK_BASE_URL;
-}
+import { SITE_URL } from "@/lib/site";
 
 // Defensive cap — this is an MVP-scale catalog today, but a sitemap should
 // never grow unbounded even if listing volume takes off unexpectedly.
 const MAX_LISTINGS = 5000;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const baseUrl = getBaseUrl();
+  const baseUrl = SITE_URL;
 
   const staticEntries: MetadataRoute.Sitemap = [
     { url: `${baseUrl}/`, changeFrequency: "daily", priority: 1 },
     { url: `${baseUrl}/marketplace`, changeFrequency: "hourly", priority: 0.9 },
+    { url: `${baseUrl}/auctions`, changeFrequency: "hourly", priority: 0.8 },
+    { url: `${baseUrl}/terms`, changeFrequency: "yearly", priority: 0.2 },
+    { url: `${baseUrl}/privacy`, changeFrequency: "yearly", priority: 0.2 },
+    { url: `${baseUrl}/refund-policy`, changeFrequency: "yearly", priority: 0.2 },
   ];
 
   let cardEntries: MetadataRoute.Sitemap = [];

@@ -13,6 +13,7 @@ import { CartProvider } from "@/app/context/CartContext";
 import { NotificationProvider } from "@/app/context/NotificationContext";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
 import { uiScaleScript, FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
 
 // Self-hosted (not next/font/google) so the build has no dependency on
 // reaching fonts.googleapis.com at build time — same font/weights/subset
@@ -26,9 +27,24 @@ const inter = localFont({
 });
 
 // Default metadata for your app (SEO + browser tab info)
+// Pages set a short title ("Marketplace"); the template adds the brand.
+// metadataBase lets every page use relative canonical/OG URLs.
 export const metadata: Metadata = {
-  title: "Pokémon MVP",
-  description: "Marketplace for buying and selling Pokémon cards",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: `${SITE_NAME} | Pokémon & Riftbound Cards Singapore`,
+    template: `%s | ${SITE_NAME}`,
+  },
+  description:
+    "Buy, sell and bid on Pokémon and Riftbound trading cards in Singapore. Japanese and English singles, live auctions, and secure checkout.",
+  applicationName: SITE_NAME,
+  openGraph: {
+    siteName: SITE_NAME,
+    type: "website",
+    locale: "en_SG",
+    images: [{ url: "/collateral/collateral.jpeg", width: 1500, height: 600 }],
+  },
+  twitter: { card: "summary_large_image" },
 };
 
 // Root layout for the entire app (all pages share this structure)

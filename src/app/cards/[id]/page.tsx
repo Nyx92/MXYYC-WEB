@@ -6,10 +6,7 @@ import { listingCatalogInclude, withListingDisplay, getCardDetailForViewer } fro
 import { centsToDollars } from "@/lib/money";
 import CardDetailClient from "./CardDetailClient";
 
-// Falls back to localhost only when NEXT_PUBLIC_SITE_URL isn't set (local
-// dev) — production deploys must set the real domain so OG/canonical URLs
-// aren't emitted as localhost.
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+import { SITE_URL } from "@/lib/site";
 
 // Server-side only — deliberately independent of the client page's own
 // `/api/cards/[id]` fetch. This runs once per request for metadata/JSON-LD
@@ -34,7 +31,7 @@ export async function generateMetadata(
 
   if (!listing) {
     return {
-      title: "Card not found | Pokémon MVP",
+      title: "Card not found",
       robots: { index: false, follow: false },
     };
   }
@@ -48,7 +45,7 @@ export async function generateMetadata(
   const url = `${SITE_URL}/cards/${params.id}`;
 
   return {
-    title: `${listing.title} | Pokémon MVP`,
+    title: listing.title,
     description,
     alternates: { canonical: url },
     openGraph: {
@@ -93,15 +90,24 @@ export default async function CardDetailPage(
         image: card.imageUrls ?? [],
         description: card.description || undefined,
         sku: params.id,
-        offers: {
-          "@type": "Offer",
-          priceCurrency: "SGD",
-          price: card.price != null ? card.price.toFixed(2) : "0",
-          availability: card.forSale
-            ? "https://schema.org/InStock"
-            : "https://schema.org/OutOfStock",
-          url: `${SITE_URL}/cards/${params.id}`,
-        },
+        brand: { "@type": "Brand", name: card.game === "POKEMON" ? "Pokémon" : "Riftbound" },
+        // An Offer with no real price is invalid for Google — only emit one
+        // when the card actually has a price.
+        offers:
+          card.price != null
+            ? {
+                "@type": "Offer",
+                priceCurrency: "SGD",
+                price: card.price.toFixed(2),
+                availability: card.forSale
+                  ? "https://schema.org/InStock"
+                  : "https://schema.org/OutOfStock",
+                url: `${SITE_URL}/cards/${params.id}`,
+                ...(card.owner?.username && {
+                  seller: { "@type": "Person", name: card.owner.username },
+                }),
+              }
+            : undefined,
       }
     : null;
 

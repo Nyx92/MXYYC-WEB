@@ -1,21 +1,11 @@
 import type { MetadataRoute } from "next";
-
-// Fallback only used when NEXT_PUBLIC_SITE_URL is unset (e.g. local dev).
-// Never hardcode this as the only source of truth — production sets the
-// real env var at deploy time (see pre-launch hardening plan).
-const FALLBACK_BASE_URL = "http://localhost:3001";
-
-function getBaseUrl(): string {
-  return process.env.NEXT_PUBLIC_SITE_URL || FALLBACK_BASE_URL;
-}
+import { SITE_URL } from "@/lib/site";
 
 export default function robots(): MetadataRoute.Robots {
-  const baseUrl = getBaseUrl();
-
   return {
     rules: {
       userAgent: "*",
-      allow: ["/", "/marketplace", "/cards/*"],
+      allow: "/",
       disallow: [
         "/cart",
         "/checkout",
@@ -31,6 +21,6 @@ export default function robots(): MetadataRoute.Robots {
         "/auth/*",
       ],
     },
-    sitemap: `${baseUrl}/sitemap.xml`,
+    sitemap: `${SITE_URL}/sitemap.xml`,
   };
 }
