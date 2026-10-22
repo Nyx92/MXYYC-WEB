@@ -14,6 +14,7 @@ import StorefrontIcon from "@mui/icons-material/Storefront";
 import GavelIcon from "@mui/icons-material/Gavel";
 import UploadIcon from "@mui/icons-material/Upload";
 import { useAuth } from "@/app/hooks/useAuth";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 const TAB_VALUES = ["/myCollection", "/marketplace", "/auctions", "/upload"];
 
@@ -32,7 +33,7 @@ export default function HomePage({ initialFeatured }: { initialFeatured: Feature
         ...pageBackgroundSx("/collateral/Riftbound_BG.webp"),
         mt: `-${NAVBAR_HEIGHT}px`,
         pt: `${NAVBAR_HEIGHT}px`,
-        minHeight: "100vh",
+        minHeight: FULL_VIEWPORT_HEIGHT,
       }}
     >
       {/* Visually hidden — gives the page a real h1 for screen readers/SEO

@@ -11,6 +11,7 @@ import { fadeInSx } from "@/app/utils/fadeIn";
 import MarketplaceTabs from "@/app/marketplace/MarketplaceTabs";
 import { pageBackgroundSx } from "@/app/utils/pageBackground";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 export default function AuctionsPageShell({ children }: { children: React.ReactNode }) {
   return (
@@ -20,7 +21,7 @@ export default function AuctionsPageShell({ children }: { children: React.ReactN
         ...pageBackgroundSx("/collateral/Riftbound_BG_Ships.webp"),
         mt: `-${NAVBAR_HEIGHT}px`,
         pt: { xs: "88px", md: "112px" },
-        minHeight: "100vh",
+        minHeight: FULL_VIEWPORT_HEIGHT,
       }}
     >
       <Box sx={{ mt: 4, px: { xs: 2, md: 4 } }}>

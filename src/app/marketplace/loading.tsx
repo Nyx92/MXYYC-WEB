@@ -13,6 +13,7 @@
 import { Box, Skeleton } from "@mui/material";
 import { pageBackgroundSx } from "@/app/utils/pageBackground";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 const SKELETON_COUNT = 25;
 
@@ -24,7 +25,7 @@ export default function MarketplaceLoading() {
         ...pageBackgroundSx("/collateral/Riftbound_BG_Market.webp"),
         mt: `-${NAVBAR_HEIGHT}px`,
         pt: { xs: "88px", md: "112px" },
-        minHeight: "100vh",
+        minHeight: FULL_VIEWPORT_HEIGHT,
       }}
     >
       <Box sx={{ mt: 4, px: { xs: 2, md: 4 } }}>

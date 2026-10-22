@@ -4,6 +4,7 @@ import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Box, Button, CircularProgress, TextField, Typography } from "@mui/material";
 import DescriptionBar, { DescriptionLabel } from "../../shared-components/DescriptionBar";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 const descriptionBarLabels: DescriptionLabel[] = [
   { title: "", link: "" },
@@ -130,7 +131,7 @@ function ResetPasswordForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <Box sx={{ backgroundColor: "#f5f5f7", display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+    <Box sx={{ backgroundColor: "#f5f5f7", display: "flex", flexDirection: "column", minHeight: FULL_VIEWPORT_HEIGHT }}>
       <DescriptionBar labels={descriptionBarLabels} />
 
       <Box sx={{ flexGrow: 1, width: "100%", maxWidth: "1200px", mx: "auto", py: 6, px: { xs: 2, sm: 0 } }}>

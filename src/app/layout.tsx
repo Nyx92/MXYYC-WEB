@@ -12,6 +12,7 @@ import { WatchlistAnimationProvider } from "@/app/context/WatchlistAnimationCont
 import { CartProvider } from "@/app/context/CartContext";
 import { NotificationProvider } from "@/app/context/NotificationContext";
 import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
+import { uiScaleScript, FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 // Self-hosted (not next/font/google) so the build has no dependency on
 // reaching fonts.googleapis.com at build time — same font/weights/subset
@@ -40,7 +41,12 @@ export default async function RootLayout({
   const session = await getServerSession(authOptions);
 
   return (
-    <html lang="en" className={inter.variable}>
+    // suppressHydrationWarning: uiScaleScript sets <html>'s style before
+    // React hydrates, so it never matches the server-rendered attribute.
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: uiScaleScript }} />
+      </head>
       <body className={inter.className} style={{ backgroundColor: "#f4f4f4" }}>
         {/* Wrap with SessionProvider so NextAuth session is available throughout */}
         {/* Puts MUI's server-rendered styles in <head>. Without it they are
@@ -55,7 +61,7 @@ export default async function RootLayout({
             <WatchlistAnimationProvider>
               <div
                 style={{
-                  minHeight: "100vh",
+                  minHeight: FULL_VIEWPORT_HEIGHT,
                   display: "flex",
                   flexDirection: "column",
                 }}

@@ -158,8 +158,8 @@ function SlideOverlayCard({
         src={image}
         alt={overlay.title}
         fill
-        // Slide is 16:9 at 350px high (622px wide), 550px high (978px) from 1480px.
-        sizes="(min-width: 1480px) 978px, 622px"
+        // Slide is 16:9 at 350px high (622px wide), 550px high (978px) from 1200px (zoomed below 1600px — see uiScale.ts).
+        sizes="(min-width: 1200px) 978px, 622px"
         quality={60}
         style={{ objectFit: "cover" }}
         priority={priority}
@@ -346,7 +346,7 @@ export default function Carousel() {
                   src={item.image}
                   alt=""
                   fill
-                  sizes="(min-width: 1480px) 978px, 622px"
+                  sizes="(min-width: 1200px) 978px, 622px"
                   quality={60}
                   style={{ objectFit: "cover" }}
                   priority={index === 0}

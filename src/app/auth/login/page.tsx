@@ -13,6 +13,7 @@ import {
 import DescriptionBar, {
   DescriptionLabel,
 } from "../../shared-components/DescriptionBar";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 const descriptionBarLabels: DescriptionLabel[] = [
   { title: "", link: "" },
@@ -98,7 +99,7 @@ export default function LoginPage() {
         backgroundColor: "#f5f5f7",
         display: "flex",
         flexDirection: "column",
-        minHeight: "100vh",
+        minHeight: FULL_VIEWPORT_HEIGHT,
       }}
     >
       <DescriptionBar labels={descriptionBarLabels} />

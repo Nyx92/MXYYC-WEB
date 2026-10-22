@@ -21,6 +21,7 @@ import "react-phone-input-2/lib/style.css";
 import { getNames } from "country-list";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
+import { FULL_VIEWPORT_HEIGHT } from "@/app/utils/uiScale";
 
 // Reuse the same Google icon from the login page.
 function GoogleIcon() {
@@ -129,7 +130,7 @@ export default function UserProfileForm() {
         backgroundColor: "#f5f5f7",
         display: "flex",
         flexDirection: "column",
-        minHeight: "100vh",
+        minHeight: FULL_VIEWPORT_HEIGHT,
       }}
     >
       <DescriptionBar labels={descriptionBarLabels} />

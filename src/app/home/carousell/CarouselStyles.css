@@ -25,7 +25,7 @@
 }
 
 /* Desktop height adjustment */
-@media (min-width: 1480px) {
+@media (min-width: 1200px) {
   .custom-slide {
     height: 550px; /* Width automatically becomes ~977px here */
   }
@@ -44,7 +44,7 @@
   transform: scale(1);
   margin-left: calc(50% - 350px * 16 / 9 / 2);
 }
-@media (min-width: 1480px) {
+@media (min-width: 1200px) {
   .custom-carousel:not(.swiper-initialized) .custom-slide:first-child {
     margin-left: calc(50% - 550px * 16 / 9 / 2);
   }

@@ -21,7 +21,7 @@ export default function AccountLayout({ children }: { children: ReactNode }) {
         display: "flex",
         alignItems: "flex-start",
         gap: 3,
-        minHeight: "100dvh",
+        minHeight: "calc(100dvh / var(--ui-scale, 1))",
         bgcolor: "#f9fafb",
         px: { xs: 2, md: 4 },
         py: 3,
