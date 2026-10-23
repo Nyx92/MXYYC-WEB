@@ -15,7 +15,10 @@ import FavoriteIcon from "@mui/icons-material/Favorite";
 // brand column and link columns, then a legal bar with copyright, policy
 // links and the site credit.
 
-const ACCENT = "#0053ff";
+// Amber, like the gold calls to action on the home page and the test
+// banner; hover goes to near-black rather than another colour.
+const ACCENT = "#b45309";
+const HOVER = "#111";
 
 const SHOP_LINKS = [
   { label: "Marketplace", href: "/marketplace" },
@@ -37,8 +40,8 @@ function ColumnTitle({ children }: { children: ReactNode }) {
       component="span"
       sx={{
         display: "block",
-        mb: 2,
-        fontSize: 12,
+        mb: 1.25,
+        fontSize: 11,
         fontWeight: 700,
         letterSpacing: "0.12em",
         textTransform: "uppercase",
@@ -73,10 +76,10 @@ function IconRow({
   const sx = {
     display: "flex",
     alignItems: "flex-start",
-    gap: 1.25,
+    gap: 1,
     width: "fit-content",
     fontSize: 13,
-    lineHeight: 1.5,
+    lineHeight: 1.4,
     color: "#4b5563",
   };
   if (!href) return <Box sx={sx}>{content}</Box>;
@@ -85,7 +88,7 @@ function IconRow({
       href={href}
       underline="none"
       {...(external && { target: "_blank", rel: "noopener noreferrer" })}
-      sx={{ ...sx, "&:hover": { color: ACCENT } }}
+      sx={{ ...sx, "&:hover": { color: HOVER } }}
     >
       {content}
     </Link>
@@ -103,22 +106,23 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
       <Container
         maxWidth="lg"
         sx={{
-          py: { xs: 6, md: 8 },
+          py: { xs: 3.5, md: 4.5 },
           display: "grid",
-          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", md: "1.3fr 1fr 1.3fr 1fr" },
-          gap: { xs: 5, md: 6 },
+          // Phones: brand and contact full width, Shop and Follow Us side by side.
+          gridTemplateColumns: { xs: "1fr 1fr", md: "1.3fr 1fr 1.3fr 1fr" },
+          gap: { xs: 3, md: 5 },
         }}
       >
         {/* Brand */}
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
+        <Box sx={{ gridColumn: { xs: "1 / -1", md: "auto" } }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, mb: 1.25 }}>
             {/* Black line art on a white background — multiply drops the
                 white on this light footer (the dark navbar uses invert + screen). */}
             <Image
               src="/collateral/logo.png"
               alt="MXYYC"
-              width={44}
-              height={44}
+              width={38}
+              height={38}
               style={{ objectFit: "contain", mixBlendMode: "multiply" }}
             />
             <Box>
@@ -132,7 +136,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
               </Typography>
             </Box>
           </Box>
-          <Typography sx={{ fontSize: 13, lineHeight: 1.6, color: "#4b5563", maxWidth: 280 }}>
+          <Typography sx={{ fontSize: 13, lineHeight: 1.5, color: "#4b5563", maxWidth: 300 }}>
             A Singapore trading card store and marketplace for Pokémon and Riftbound — buy, sell
             and bid on Japanese and English singles.
           </Typography>
@@ -141,13 +145,13 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
         {/* Shop */}
         <Box>
           <ColumnTitle>Shop</ColumnTitle>
-          <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0, display: "grid", gap: 1.25 }}>
+          <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0, display: "grid", gap: 0.75 }}>
             {SHOP_LINKS.map(({ label, href }) => (
               <li key={href}>
                 <Link
                   href={href}
                   underline="none"
-                  sx={{ fontSize: 13, color: "#4b5563", "&:hover": { color: ACCENT } }}
+                  sx={{ fontSize: 13, color: "#4b5563", "&:hover": { color: HOVER } }}
                 >
                   {label}
                 </Link>
@@ -157,7 +161,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
         </Box>
 
         {/* Visit / contact */}
-        <Box sx={{ display: "grid", gap: 1.5, alignContent: "start" }}>
+        <Box sx={{ display: "grid", gap: 0.9, alignContent: "start", gridColumn: { xs: "1 / -1", md: "auto" }, order: { xs: 4, md: 0 } }}>
           <ColumnTitle>Visit Us</ColumnTitle>
           <IconRow icon={<LocationOnOutlinedIcon />}>22, #08-087 Midview City, Singapore 573969</IconRow>
           <IconRow icon={<PhoneOutlinedIcon />} href="tel:+6592954911">
@@ -175,7 +179,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
         </Box>
 
         {/* Socials */}
-        <Box sx={{ display: "grid", gap: 1.5, alignContent: "start" }}>
+        <Box sx={{ display: "grid", gap: 0.9, alignContent: "start" }}>
           <ColumnTitle>Follow Us</ColumnTitle>
           <IconRow icon={<InstagramIcon />} href="https://www.instagram.com/mxyycards" external>
             @mxyycards
@@ -184,7 +188,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
       </Container>
 
       {/* Legal bar */}
-      <Box sx={{ backgroundColor: "#dedee2", py: 3 }}>
+      <Box sx={{ backgroundColor: "#dedee2", py: 1.5 }}>
         <Container
           maxWidth="lg"
           sx={{
@@ -192,7 +196,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
             flexDirection: { xs: "column", md: "row" },
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 2,
+            gap: { xs: 0.75, md: 2 },
             fontSize: 12,
             color: "#6b7280",
             textAlign: "center",
@@ -201,7 +205,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
           <span>© {new Date().getFullYear()} MXYYC. All rights reserved.</span>
           <Box sx={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 2 }}>
             {LEGAL_LINKS.map(({ label, href }) => (
-              <Link key={href} href={href} underline="none" sx={{ color: "inherit", "&:hover": { color: "#111" } }}>
+              <Link key={href} href={href} underline="none" sx={{ color: "inherit", "&:hover": { color: HOVER } }}>
                 {label}
               </Link>
             ))}
@@ -215,7 +219,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
             target="_blank"
             rel="noopener"
             underline="none"
-            sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "inherit", "&:hover": { color: "#111" } }}
+            sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "inherit", "&:hover": { color: HOVER } }}
           >
             Proudly built by
             <Image
