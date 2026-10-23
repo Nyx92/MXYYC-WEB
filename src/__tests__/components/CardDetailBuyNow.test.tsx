@@ -111,6 +111,99 @@ describe("CardDetailClient — Buy Now", () => {
   });
 });
 
+describe("CardDetailClient — reserved by another buyer", () => {
+  const inMinutes = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
+
+  it("shows a disabled Reserved button with a tooltip instead of Buy Now", async () => {
+    route(() => undefined);
+    render(<CardDetailClient initialCard={{ ...card, reservedUntil: inMinutes(10) }} />);
+
+    const reserved = screen.getByRole("button", { name: "Reserved" }) as HTMLButtonElement;
+    expect(reserved.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Buy Now" })).toBeNull();
+    fireEvent.mouseOver(reserved.parentElement!);
+    expect(await screen.findByText(/Another buyer is checking out this card/)).toBeTruthy();
+  });
+
+  it("flips back to Buy Now when the hold ends", async () => {
+    vi.useFakeTimers();
+    try {
+      route(() => undefined);
+      render(<CardDetailClient initialCard={{ ...card, reservedUntil: inMinutes(5) }} />);
+      expect(screen.getByRole("button", { name: "Reserved" })).toBeTruthy();
+
+      await act(async () => { vi.advanceTimersByTime(5 * 60_000 + 10); });
+
+      expect((screen.getByRole("button", { name: "Buy Now" }) as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a 409 from checkout reloads the card so the button shows Reserved", async () => {
+    route((url) => {
+      if (url === "/api/checkout") return Promise.resolve(res({ error: "Another buyer is checking out this card right now." }, 409));
+      if (url === "/api/cards/card1") return Promise.resolve(res({ card: { ...card, reservedUntil: inMinutes(14) } }));
+      return undefined;
+    });
+    render(<CardDetailClient initialCard={card} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Buy Now" }));
+
+    await screen.findByText("Another buyer is checking out this card right now.");
+    expect(await screen.findByRole("button", { name: "Reserved" })).toBeTruthy();
+  });
+});
+
+describe("CardDetailClient — releasing the viewer's own checkout", () => {
+  const cancelCalls = () => calls("/api/checkout/cancel");
+
+  it("closes the viewer's open checkout when they land on the card (back from Stripe, reload)", async () => {
+    route(() => undefined);
+    render(<CardDetailClient initialCard={{ ...card, reservedByViewer: true }} />);
+
+    await waitFor(() => expect(cancelCalls()).toHaveLength(1));
+    expect(JSON.parse(cancelCalls()[0][1].body)).toEqual({ cardId: "card1" });
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Buy Now" }) as HTMLButtonElement).disabled).toBe(false)
+    );
+  });
+
+  it("does nothing for a card the viewer isn't checking out", async () => {
+    route(() => undefined);
+    render(<CardDetailClient initialCard={card} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(cancelCalls()).toHaveLength(0);
+  });
+
+  it("closes the checkout when the back button restores the page from the browser cache", async () => {
+    route((url) => (url === "/api/checkout" ? Promise.resolve(res({ url: "https://checkout.stripe.test/cs_1" })) : undefined));
+    render(<CardDetailClient initialCard={card} />);
+    fireEvent.click(screen.getByRole("button", { name: "Buy Now" }));
+    await waitFor(() => expect(calls("/api/checkout")).toHaveLength(1));
+    // Still disabled: the page is "navigating away" to Stripe.
+    await waitFor(() => expect((screen.getByRole("button", { name: "Buy Now" }) as HTMLButtonElement).disabled).toBe(true));
+
+    await act(async () => {
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    });
+
+    await waitFor(() => expect(cancelCalls()).toHaveLength(1));
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Buy Now" }) as HTMLButtonElement).disabled).toBe(false)
+    );
+  });
+
+  it("ignores a cached-page restore when no checkout was started", async () => {
+    route(() => undefined);
+    render(<CardDetailClient initialCard={card} />);
+    await act(async () => {
+      window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    });
+    expect(cancelCalls()).toHaveLength(0);
+  });
+});
+
 describe("CardDetailClient — auction accept/decline", () => {
   beforeEach(() => { authUserId = "seller1"; });
   const auctionCard = { ...card, inAuction: true };

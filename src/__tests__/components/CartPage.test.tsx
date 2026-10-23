@@ -140,4 +140,39 @@ describe("CartPage", () => {
     await screen.findByText(/Couldn't clear your cart/);
     expect(await screen.findByText("Card i2")).toBeTruthy();
   });
+
+  it("shows a reserved note on an item another buyer is checking out", async () => {
+    const reservedCart: CartResponse = {
+      ...cart,
+      packages: [{ ...cart.packages[0], items: [{ ...item("i1"), card: { ...item("i1").card, reservedUntil: new Date(Date.now() + 600_000).toISOString() } }] }],
+    };
+    fetchMock.mockImplementation(() => Promise.resolve(ok(reservedCart)));
+    await renderCart();
+    expect(screen.getByText(/Reserved — another buyer is checking out/)).toBeTruthy();
+  });
+
+  it("closes the buyer's own open checkout when they come back, then shows the freed cart", async () => {
+    const held: CartResponse = {
+      ...cart,
+      packages: [{ ...cart.packages[0], items: [{ ...item("i1"), card: { ...item("i1").card, reservedByViewer: true } }] }],
+    };
+    let cartGets = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === "/api/cart" && !init?.method) return Promise.resolve(ok(++cartGets === 1 ? held : cart));
+      if (url === "/api/checkout/cancel") return Promise.resolve(ok({ released: 1, paid: false }));
+      throw new Error(`unexpected ${url}`);
+    });
+
+    await renderCart();
+
+    expect(calls("POST", "/api/checkout/cancel")).toHaveLength(1);
+    expect(cartGets).toBe(2);
+    expect(screen.getByText("Card i2")).toBeTruthy();
+  });
+
+  it("does not call cancel when the buyer has no open checkout", async () => {
+    route((url) => { throw new Error(`unexpected ${url}`); });
+    await renderCart();
+    expect(calls("POST", "/api/checkout/cancel")).toHaveLength(0);
+  });
 });
