@@ -7,7 +7,7 @@ import { GET as expireOffersCron } from "@/app/api/cron/expire-offers/route";
 import { GET as getCard } from "@/app/api/cards/[id]/route";
 import { GET as getCart } from "@/app/api/cart/route";
 import { createListing, createUser } from "./helpers/factories";
-import { loginAs } from "./helpers/session";
+import { getServerSession, loginAs } from "./helpers/session";
 import { idParams, req } from "./helpers/http";
 import { completeSession, sessionStatus, stripe } from "./helpers/stripe";
 
@@ -232,6 +232,7 @@ describe("lapsed holds are closed by the every-minute cron", () => {
 describe("what the public APIs reveal about a hold", () => {
   const cardFor = async (viewerId: string | null, id: string) => {
     if (viewerId) loginAs(viewerId);
+    else getServerSession.mockResolvedValue(null); // signed out
     return (await (await getCard(req(`/api/cards/${id}`), idParams(id))).json()).card;
   };
 
