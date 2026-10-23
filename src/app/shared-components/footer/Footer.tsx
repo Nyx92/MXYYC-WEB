@@ -132,7 +132,7 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
         </Box>
         <Box sx={{ mt: 2, mb: 1 }}>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-            22 Midview City #08-87, S73969
+            22, #08-087 Midview City, Singapore 573969
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
             Phone:{" "}

@@ -21,6 +21,12 @@ const jsonLd = {
       logo: `${SITE_URL}/icons/icon-512.png`,
       email: "mxyychua@mxyyc.community",
       telephone: "+6592954911",
+      address: {
+        "@type": "PostalAddress",
+        streetAddress: "22 Midview City, #08-087",
+        postalCode: "573969",
+        addressCountry: "SG",
+      },
     },
     {
       "@type": "WebSite",

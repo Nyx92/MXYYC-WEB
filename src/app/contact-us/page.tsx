@@ -28,7 +28,7 @@ export default function ContactPage() {
       </p>
 
       <h2>Address</h2>
-      <p>22 Midview City #08-87, S73969</p>
+      <p>22, #08-087 Midview City, Singapore 573969</p>
 
       <h2>Orders and refunds</h2>
       <p>
