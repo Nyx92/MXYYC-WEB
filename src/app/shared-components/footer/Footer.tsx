@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { forwardRef } from "react";
+import Image from "next/image";
 import "./Footer.css"; // Import your CSS file for media queries
 
 // Define the type for FooterLink props
@@ -207,6 +208,28 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
             Refund Policy
           </Link>
           <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
+          {/* Site credit — same as the other WaveSEO-built sites. */}
+          <Link
+            href="https://waveseo.co"
+            target="_blank"
+            rel="noopener"
+            color="inherit"
+            underline="hover"
+            fontSize={{ xs: 10, md: 15 }}
+            sx={{ display: "inline-flex", alignItems: "center", gap: 0.75 }}
+          >
+            Proudly built by
+            <Image
+              src="/images/site/waveseo-logo-mark.png"
+              alt=""
+              width={16}
+              height={16}
+              style={{ borderRadius: 2 }}
+            />
+            <Box component="span" sx={{ fontWeight: 700 }}>
+              waveseo.co
+            </Box>
+          </Link>
         </Box>
       </Container>
     </Box>
