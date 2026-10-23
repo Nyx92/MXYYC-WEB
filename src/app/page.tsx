@@ -21,6 +21,7 @@ const jsonLd = {
       logo: `${SITE_URL}/icons/icon-512.png`,
       email: "mxyychua@mxyyc.community",
       telephone: "+6592954911",
+      sameAs: ["https://www.instagram.com/mxyycards"],
       address: {
         "@type": "PostalAddress",
         streetAddress: "22 Midview City, #08-087",

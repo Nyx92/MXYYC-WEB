@@ -1,222 +1,221 @@
 "use client";
-import {
-  Box,
-  Container,
-  Link,
-  Typography,
-  Divider,
-  Accordion,
-  AccordionSummary,
-  AccordionDetails,
-} from "@mui/material";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { forwardRef } from "react";
+
+import { forwardRef, type ReactNode } from "react";
 import Image from "next/image";
-import "./Footer.css"; // Import your CSS file for media queries
+import { Box, Container, Link, Typography } from "@mui/material";
+import LocationOnOutlinedIcon from "@mui/icons-material/LocationOnOutlined";
+import PhoneOutlinedIcon from "@mui/icons-material/PhoneOutlined";
+import MailOutlineIcon from "@mui/icons-material/MailOutline";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import SendOutlinedIcon from "@mui/icons-material/SendOutlined";
+import InstagramIcon from "@mui/icons-material/Instagram";
+import FavoriteIcon from "@mui/icons-material/Favorite";
 
-// Define the type for FooterLink props
-interface FooterLinkProps {
-  href: string;
-  title: string;
-}
+// Layout follows the other WaveSEO-built sites (Mongolia Nomad Tours): a
+// brand column and link columns, then a legal bar with copyright, policy
+// links and the site credit.
 
-// Define the type for FooterColumn props
-interface FooterColumnProps {
-  columnGroups: {
-    title: string;
-    items: string[];
-  }[];
-}
+const ACCENT = "#0053ff";
 
-const FooterLink = ({ href, title }: FooterLinkProps) => (
-  <Link
-    href={href}
-    variant="body2"
-    color="text.secondary"
-    underline="hover"
-    sx={{ display: "block", mb: 0.5 }}
-  >
-    {title}
-  </Link>
-);
+const SHOP_LINKS = [
+  { label: "Marketplace", href: "/marketplace" },
+  { label: "Live Auctions", href: "/auctions" },
+  { label: "Pokémon Cards", href: "/marketplace?game=POKEMON" },
+  { label: "Riftbound Cards", href: "/marketplace?game=RIFTBOUND" },
+  { label: "Sell Your Cards", href: "/upload" },
+];
 
-const FooterColumn = ({ columnGroups }: FooterColumnProps) => {
+const LEGAL_LINKS = [
+  { label: "Privacy Policy", href: "/privacy" },
+  { label: "Terms of Service", href: "/terms" },
+  { label: "Refund Policy", href: "/refund-policy" },
+];
+
+function ColumnTitle({ children }: { children: ReactNode }) {
   return (
-    <>
-      {/* For mobile view */}
-      <Box className="mobile-only" sx={{ width: "100%" }}>
-        {columnGroups.map((group, index) => (
-          <Accordion key={index}>
-            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-              <Typography variant="subtitle1">{group.title}</Typography>
-            </AccordionSummary>
-            <AccordionDetails>
-              {group.items.map((item, itemIndex) => (
-                <FooterLink key={itemIndex} href="#" title={item} />
-              ))}
-            </AccordionDetails>
-          </Accordion>
-        ))}
-      </Box>
+    <Typography
+      component="span"
+      sx={{
+        display: "block",
+        mb: 2,
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        color: "#111",
+      }}
+    >
+      {children}
+    </Typography>
+  );
+}
 
-      {/* For desktop view */}
-      <Box
-        className="desktop-only"
-        sx={{
-          flex: "1",
-          minWidth: 0,
-          maxWidth: "100%",
-          padding: "0 16px",
-        }}
-      >
-        {columnGroups.map((group, index) => (
-          <Box key={index} sx={{ mb: 3 }}>
-            <Typography variant="subtitle1" gutterBottom>
-              {group.title}
-            </Typography>
-            {group.items.map((item, itemIndex) => (
-              <FooterLink key={itemIndex} href="#" title={item} />
-            ))}
-          </Box>
-        ))}
+// One icon + text row in the Visit Us / Follow Us columns.
+function IconRow({
+  icon,
+  children,
+  href,
+  external = false,
+}: {
+  icon: ReactNode;
+  children: ReactNode;
+  href?: string;
+  external?: boolean;
+}) {
+  const content = (
+    <>
+      <Box component="span" sx={{ display: "flex", color: ACCENT, mt: "1px", "& svg": { fontSize: 16 } }}>
+        {icon}
       </Box>
+      <span>{children}</span>
     </>
   );
-};
+  const sx = {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 1.25,
+    width: "fit-content",
+    fontSize: 13,
+    lineHeight: 1.5,
+    color: "#4b5563",
+  };
+  if (!href) return <Box sx={sx}>{content}</Box>;
+  return (
+    <Link
+      href={href}
+      underline="none"
+      {...(external && { target: "_blank", rel: "noopener noreferrer" })}
+      sx={{ ...sx, "&:hover": { color: ACCENT } }}
+    >
+      {content}
+    </Link>
+  );
+}
 
 const Footer = forwardRef<HTMLDivElement>((_, ref) => {
-  const footerColumns = [
-    // add as required
-    {
-      columnGroups: [
-        // {
-        //   title: "Programmes",
-        //   items: ["daSH", "dancED"],
-        // },
-      ],
-    },
-    // {
-    //   columnGroups: [
-    //     {
-    //       title: "Classes",
-    //       items: [
-    //         "Mat Pilates",
-    //         "Fun-size movers",
-    //         "Creative Contemporary Dance",
-    //         "daSH residency",
-    //       ],
-    //     },
-    //   ],
-    // },
-  ];
-
   return (
     <Box
       component="footer"
       ref={ref}
       id="footer"
-      sx={{ backgroundColor: "#e8e8ea", py: 4 }}
+      sx={{ backgroundColor: "#e8e8ea", borderTop: "1px solid #d9d9de" }}
     >
-      <Container maxWidth="lg">
-        {/* <Divider sx={{ my: 4 }} /> */}
-        <Box
+      <Container
+        maxWidth="lg"
+        sx={{
+          py: { xs: 6, md: 8 },
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", md: "1.3fr 1fr 1.3fr 1fr" },
+          gap: { xs: 5, md: 6 },
+        }}
+      >
+        {/* Brand */}
+        <Box>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, mb: 2 }}>
+            {/* Black line art on a white background — multiply drops the
+                white on this light footer (the dark navbar uses invert + screen). */}
+            <Image
+              src="/collateral/logo.png"
+              alt="MXYYC"
+              width={44}
+              height={44}
+              style={{ objectFit: "contain", mixBlendMode: "multiply" }}
+            />
+            <Box>
+              <Typography sx={{ fontWeight: 800, fontSize: 17, color: "#111", lineHeight: 1.2 }}>
+                MXYYC
+              </Typography>
+              <Typography
+                sx={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: ACCENT }}
+              >
+                Online TCG Store
+              </Typography>
+            </Box>
+          </Box>
+          <Typography sx={{ fontSize: 13, lineHeight: 1.6, color: "#4b5563", maxWidth: 280 }}>
+            A Singapore trading card store and marketplace for Pokémon and Riftbound — buy, sell
+            and bid on Japanese and English singles.
+          </Typography>
+        </Box>
+
+        {/* Shop */}
+        <Box>
+          <ColumnTitle>Shop</ColumnTitle>
+          <Box component="ul" sx={{ listStyle: "none", m: 0, p: 0, display: "grid", gap: 1.25 }}>
+            {SHOP_LINKS.map(({ label, href }) => (
+              <li key={href}>
+                <Link
+                  href={href}
+                  underline="none"
+                  sx={{ fontSize: 13, color: "#4b5563", "&:hover": { color: ACCENT } }}
+                >
+                  {label}
+                </Link>
+              </li>
+            ))}
+          </Box>
+        </Box>
+
+        {/* Visit / contact */}
+        <Box sx={{ display: "grid", gap: 1.5, alignContent: "start" }}>
+          <ColumnTitle>Visit Us</ColumnTitle>
+          <IconRow icon={<LocationOnOutlinedIcon />}>22, #08-087 Midview City, Singapore 573969</IconRow>
+          <IconRow icon={<PhoneOutlinedIcon />} href="tel:+6592954911">
+            +65 9295 4911
+          </IconRow>
+          <IconRow icon={<MailOutlineIcon />} href="mailto:mxyychua@mxyyc.community">
+            mxyychua@mxyyc.community
+          </IconRow>
+          <IconRow icon={<InfoOutlinedIcon />} href="/about-us">
+            About Us
+          </IconRow>
+          <IconRow icon={<SendOutlinedIcon />} href="/contact-us">
+            Contact Us
+          </IconRow>
+        </Box>
+
+        {/* Socials */}
+        <Box sx={{ display: "grid", gap: 1.5, alignContent: "start" }}>
+          <ColumnTitle>Follow Us</ColumnTitle>
+          <IconRow icon={<InstagramIcon />} href="https://www.instagram.com/mxyycards" external>
+            @mxyycards
+          </IconRow>
+        </Box>
+      </Container>
+
+      {/* Legal bar */}
+      <Box sx={{ backgroundColor: "#dedee2", py: 3 }}>
+        <Container
+          maxWidth="lg"
           sx={{
             display: "flex",
-            flexWrap: "wrap",
+            flexDirection: { xs: "column", md: "row" },
+            alignItems: "center",
             justifyContent: "space-between",
-            rowGap: 2,
+            gap: 2,
+            fontSize: 12,
+            color: "#6b7280",
+            textAlign: "center",
           }}
         >
-          {footerColumns.map((column, index) => (
-            <FooterColumn key={index} columnGroups={column.columnGroups} />
-          ))}
-        </Box>
-        <Box sx={{ mt: 2, mb: 1 }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-            22, #08-087 Midview City, Singapore 573969
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-            Phone:{" "}
-            <Link href="tel:+6592954911" color="inherit" underline="hover">
-              +65 9295 4911
-            </Link>
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Need to contact us?{" "}
-            <Link
-              href="mailto:mxyychua@mxyyc.community"
-              color="inherit"
-              underline="hover"
-            >
-              Click here to Email us!
-            </Link>
-          </Typography>
-        </Box>
-        <Divider sx={{ my: 1 }} />
-        <Box
-          display="flex"
-          justifyContent="left"
-          alignItems="center"
-          flexWrap="wrap"
-        >
-          <Typography variant="body2" color="text.secondary" align="left">
-            Copyright © 2026 MXYYC. All rights reserved.
-          </Typography>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
-          <Link
-            href="/about-us"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-          >
-            About Us
-          </Link>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
-          <Link
-            href="/contact-us"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-          >
-            Contact Us
-          </Link>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
-          <Link
-            href="/terms"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-          >
-            Terms of Service
-          </Link>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
-          <Link
-            href="/privacy"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-          >
-            Privacy Policy
-          </Link>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
-          <Link
-            href="/refund-policy"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-          >
-            Refund Policy
-          </Link>
-          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
+          <span>© {new Date().getFullYear()} MXYYC. All rights reserved.</span>
+          <Box sx={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 2 }}>
+            {LEGAL_LINKS.map(({ label, href }) => (
+              <Link key={href} href={href} underline="none" sx={{ color: "inherit", "&:hover": { color: "#111" } }}>
+                {label}
+              </Link>
+            ))}
+          </Box>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            Made with <FavoriteIcon sx={{ fontSize: 12, color: "#e11d48" }} /> for collectors
+          </Box>
           {/* Site credit — same as the other WaveSEO-built sites. */}
           <Link
             href="https://waveseo.co"
             target="_blank"
             rel="noopener"
-            color="inherit"
-            underline="hover"
-            fontSize={{ xs: 10, md: 15 }}
-            sx={{ display: "inline-flex", alignItems: "center", gap: 0.75 }}
+            underline="none"
+            sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "inherit", "&:hover": { color: "#111" } }}
           >
             Proudly built by
             <Image
@@ -230,8 +229,8 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
               waveseo.co
             </Box>
           </Link>
-        </Box>
-      </Container>
+        </Container>
+      </Box>
     </Box>
   );
 });
