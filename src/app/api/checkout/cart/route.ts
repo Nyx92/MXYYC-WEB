@@ -94,8 +94,9 @@ export async function POST(_req: NextRequest) {
       }
     }
 
-    // Close any lapsed earlier hold first — same reason as checkout/route.ts.
-    const sold = await closeLapsedCheckouts(listingIds);
+    // Close any lapsed earlier hold, and this buyer's own earlier checkout,
+    // first — same reasons as checkout/route.ts.
+    const sold = await closeLapsedCheckouts(listingIds, buyerId);
     if (sold.length > 0) {
       throw new CardUnavailableError(
         `"${listingMap.get(sold[0])!.title}" was just sold. Remove it from your cart to continue.`

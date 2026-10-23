@@ -62,4 +62,19 @@ describe("POST /api/checkout/cancel", () => {
     expect(await res.json()).toEqual({ released: 1, paid: true });
     expect(mockCloseCheckoutSession).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps closing other sessions when one fails", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([
+      { reservedCheckoutSessionId: "cs_broken" },
+      { reservedCheckoutSessionId: "cs_ok" },
+    ]);
+    mockCloseCheckoutSession.mockImplementation(async (id: string) => {
+      if (id === "cs_broken") throw new Error("Stripe down");
+      return true;
+    });
+
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ released: 1, paid: false });
+  });
 });

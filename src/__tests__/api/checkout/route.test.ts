@@ -206,7 +206,7 @@ describe("POST /api/checkout", () => {
     const res = await POST(makeRequest({ cardId: "card-1" }));
     expect(res.status).toBe(409);
     expect((await res.json()).error).toBe("This card was just sold.");
-    expect(mockCloseLapsedCheckouts).toHaveBeenCalledWith(["card-1"]);
+    expect(mockCloseLapsedCheckouts).toHaveBeenCalledWith(["card-1"], "buyer-1");
     expect(mockStripeInstance.checkout.sessions.create).not.toHaveBeenCalled();
   });
 

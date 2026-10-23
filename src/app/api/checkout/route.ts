@@ -77,7 +77,9 @@ export async function POST(req: NextRequest) {
 
     // An earlier buyer's hold may have run out with their Stripe page still
     // open — close it first, so they can't pay after this buyer reserves.
-    if ((await closeLapsedCheckouts([cardId])).length > 0) {
+    // This buyer's own earlier checkout of the card is closed too, so coming
+    // back to buy again isn't blocked by their own hold.
+    if ((await closeLapsedCheckouts([cardId], buyerId)).length > 0) {
       throw new CardUnavailableError("This card was just sold.");
     }
 

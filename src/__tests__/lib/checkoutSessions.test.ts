@@ -45,6 +45,15 @@ describe("closeCheckoutSession", () => {
     expect(mockPrisma.$transaction).toHaveBeenCalled();
   });
 
+  it("releases a session this Stripe key doesn't know (made in the other mode)", async () => {
+    mockStripe.checkout.sessions.expire.mockRejectedValue(
+      Object.assign(new Error("No such checkout.session"), { code: "resource_missing" })
+    );
+    expect(await closeCheckoutSession("cs_live_x")).toBe(true);
+    expect(mockStripe.checkout.sessions.retrieve).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).toHaveBeenCalled();
+  });
+
   it("rethrows when the session is still open but expire failed", async () => {
     mockStripe.checkout.sessions.expire.mockRejectedValue(new Error("Stripe down"));
     mockStripe.checkout.sessions.retrieve.mockResolvedValue({ status: "open" });
@@ -73,9 +82,24 @@ describe("closeLapsedCheckouts", () => {
     expect(mockPrisma.listing.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          reservedUntil: { lt: expect.any(Date) },
+          OR: [{ reservedUntil: { lt: expect.any(Date) } }],
           reservedCheckoutSessionId: { not: null },
           id: { in: ["a", "b", "c", "d"] },
+        }),
+      })
+    );
+  });
+
+  it("with a buyerId, also closes that buyer's own active holds", async () => {
+    mockPrisma.listing.findMany.mockResolvedValue([{ id: "a", reservedCheckoutSessionId: "cs_mine" }]);
+    mockStripe.checkout.sessions.expire.mockResolvedValue({});
+
+    expect(await closeLapsedCheckouts(["a"], "buyer-1")).toEqual([]);
+    expect(mockStripe.checkout.sessions.expire).toHaveBeenCalledWith("cs_mine");
+    expect(mockPrisma.listing.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ reservedUntil: { lt: expect.any(Date) } }, { reservedById: "buyer-1" }],
         }),
       })
     );

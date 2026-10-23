@@ -37,6 +37,15 @@ export async function closeCheckoutSession(sessionId: string): Promise<boolean> 
   try {
     await stripe.checkout.sessions.expire(sessionId);
   } catch (err) {
+    // Stripe doesn't know this session under the current key — it was made
+    // in the other mode (cs_live_ vs cs_test_; local dev and production
+    // share one database, and the key can be switched). This deployment can
+    // never see it paid, so holding the card would lock it forever.
+    if ((err as { code?: string }).code === "resource_missing") {
+      console.warn(`[checkout] session ${sessionId} unknown to this Stripe key — releasing its hold`);
+      await releaseCheckoutSession(sessionId);
+      return true;
+    }
     // expire() only works on an open session — find out why it isn't open.
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     if (session.status === "complete") return false;
@@ -48,7 +57,9 @@ export async function closeCheckoutSession(sessionId: string): Promise<boolean> 
 
 /**
  * closeLapsedCheckouts — closes the Stripe session behind every hold whose
- * 15 minutes are up. Without it, a buyer who left the Stripe page open could
+ * 15 minutes are up — and, with buyerId, behind that buyer's own holds on
+ * these listings: a buyer who comes back to check out again replaces their
+ * earlier checkout instead of being locked out by it. Without it, a buyer who left the Stripe page open could
  * still pay up to 24 hours later (Stripe's default session lifetime; its
  * expires_at minimum is 30 minutes, longer than our hold), after the card
  * went to someone else.
@@ -59,10 +70,13 @@ export async function closeCheckoutSession(sessionId: string): Promise<boolean> 
  * their lapsed session was in fact paid, or Stripe couldn't be reached to
  * close it (a checkout must not reserve those; the cron retries next minute).
  */
-export async function closeLapsedCheckouts(listingIds?: string[]): Promise<string[]> {
+export async function closeLapsedCheckouts(
+  listingIds?: string[],
+  buyerId?: string
+): Promise<string[]> {
   const lapsed = await prisma.listing.findMany({
     where: {
-      reservedUntil: { lt: new Date() },
+      OR: [{ reservedUntil: { lt: new Date() } }, ...(buyerId ? [{ reservedById: buyerId }] : [])],
       reservedCheckoutSessionId: { not: null },
       ...(listingIds && { id: { in: listingIds } }),
     },

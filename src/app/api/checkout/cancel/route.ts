@@ -38,11 +38,21 @@ export async function POST(req: NextRequest) {
       select: { reservedCheckoutSessionId: true },
     });
 
+    // One session that can't be closed (Stripe down) must not stop the rest.
     let released = 0;
     let paid = false;
+    let failed = 0;
     for (const sessionId of new Set(held.map((l) => l.reservedCheckoutSessionId!))) {
-      if (await closeCheckoutSession(sessionId)) released++;
-      else paid = true;
+      try {
+        if (await closeCheckoutSession(sessionId)) released++;
+        else paid = true;
+      } catch (err) {
+        failed++;
+        console.error("[checkout/cancel] could not close session:", sessionId, err);
+      }
+    }
+    if (failed > 0 && released === 0 && !paid) {
+      return NextResponse.json({ error: "Failed to cancel checkout" }, { status: 500 });
     }
     return NextResponse.json({ released, paid });
   } catch (err) {
