@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, startTransition } from "react";
-import { Box, Typography, Button, Divider, Alert } from "@mui/material";
+import { Box, Typography, Button, Divider, Alert, Tooltip } from "@mui/material";
 import { useRouter } from "next/navigation";
 import GavelIcon from "@mui/icons-material/Gavel";
 import ShoppingCartIcon from "@mui/icons-material/ShoppingCart";
@@ -65,6 +65,13 @@ export interface ActiveOffer {
   expiresAt?: string | null; // ISO string — used for the countdown timer
 }
 
+// Tooltip text for a reserved card. Uses the clock time the hold ends (not
+// a countdown) so it needs no timer and stays right while the tooltip is open.
+function reservedTooltip(until: string) {
+  const time = new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `Another buyer is checking out this card. If they don't complete payment, it will be available again at ${time}.`;
+}
+
 interface BuyBoxProps {
   tcgPlayerId: string;
   currentCardId: string;
@@ -80,6 +87,9 @@ interface BuyBoxProps {
   // True while a Buy Now checkout request is in flight — disables the button
   // so a double click can't open two checkout sessions.
   buyNowPending?: boolean;
+  // Set while another buyer is checking out this card (when their hold
+  // ends) — Buy Now shows as "Reserved" until then.
+  reservedUntil?: string | null;
 
   mode?: "viewer" | "owner";
   offersCount?: number;
@@ -133,6 +143,7 @@ export default function BuyBox({
   onPlaceOffer,
   onBuyNow,
   buyNowPending = false,
+  reservedUntil = null,
   mode = "viewer",
   offersCount = 0,
   onEdit,
@@ -339,8 +350,9 @@ export default function BuyBox({
 
   // Right button — always "Buy Now" or "Edit" (no "Pay Now" button in the
   // new flow since payment is captured automatically on seller accept).
-  const rightBtnLabel = isOwnerMode ? "Edit" : "Buy Now";
-  const rightBtnDisabled = isOwnerMode ? false : !isForSale;
+  const isReserved = !isOwnerMode && isForSale && reservedUntil != null;
+  const rightBtnLabel = isOwnerMode ? "Edit" : isReserved ? "Reserved" : "Buy Now";
+  const rightBtnDisabled = isOwnerMode ? false : !isForSale || isReserved;
 
   // ── Auction-specific derived values ───────────────────────────────────────
   // 0. auctionSellerMode: who sees the seller-side auction controls (Accept/Decline,
@@ -781,10 +793,20 @@ export default function BuyBox({
                 {offerIsPending && !isOwnerMode ? "Amend Offer" : leftBtnLabel}
               </Button>
 
+              <Tooltip
+                arrow
+                enterTouchDelay={0}
+                // The title only renders when the tooltip opens (in the
+                // browser), so the locale-formatted time can't cause a
+                // server/browser hydration mismatch.
+                title={isReserved ? reservedTooltip(reservedUntil!) : ""}
+              >
+              {/* span: a disabled button fires no events, so the tooltip needs a wrapper */}
+              <span style={{ display: "block" }}>
               <Button
                 fullWidth
                 variant="contained"
-                startIcon={isOwnerMode ? <EditIcon /> : <ShoppingCartIcon />}
+                startIcon={isOwnerMode ? <EditIcon /> : isReserved ? <HourglassEmptyIcon /> : <ShoppingCartIcon />}
                 onClick={isOwnerMode ? onEdit : onBuyNow}
                 disabled={rightBtnDisabled || (!isOwnerMode && buyNowPending)}
                 sx={{
@@ -799,6 +821,8 @@ export default function BuyBox({
               >
                 {rightBtnLabel}
               </Button>
+              </span>
+              </Tooltip>
             </Box>
 
             {/* ── START AUCTION (owner only, when card is not yet in auction) ── */}

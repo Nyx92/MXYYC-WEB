@@ -8,6 +8,7 @@ import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay"
 import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
 import { rateLimitResponse } from "@/lib/rateLimit";
 import { releaseCheckoutReservation } from "@/lib/webhookHelpers";
+import { CardUnavailableError, closeLapsedCheckouts } from "@/lib/checkoutSessions";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -74,12 +75,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // An earlier buyer's hold may have run out with their Stripe page still
+    // open — close it first, so they can't pay after this buyer reserves.
+    if ((await closeLapsedCheckouts([cardId])).length > 0) {
+      throw new CardUnavailableError("This card was just sold.");
+    }
+
     const amount = listing.price;
     // 15 minutes gives a buyer enough time to complete the Stripe Checkout
     // page without holding the card unreasonably long from other buyers.
-    // Deliberately under Stripe's 30-minute expires_at minimum — see the
-    // comment on the commented-out expires_at below for why the two aren't
-    // synced yet.
+    // Deliberately under Stripe's 30-minute expires_at minimum — the
+    // session is closed by closeLapsedCheckouts once the hold runs out.
     const reserveMinutes = 15;
     const reservedUntil = new Date(Date.now() + reserveMinutes * 60_000);
 
@@ -117,7 +123,9 @@ export async function POST(req: NextRequest) {
       });
       // 3. If updateMany affected 0 rows, it means the listing is being reserved
       if (updated.count !== 1)
-        throw new Error("Card just got reserved/sold by someone else");
+        throw new CardUnavailableError(
+          "Another buyer is checking out this card right now. If they don't complete payment, it will be available again within 15 minutes."
+        );
 
       // 4. Create the formal Order record linked to this attempt
       return tx.order.create({
@@ -169,14 +177,8 @@ export async function POST(req: NextRequest) {
         buyerId,
         sellerId: listing.ownerId,
       },
-      // expires_at intentionally omitted: Stripe requires it to be at least
-      // 30 minutes from session creation, but our DB reservation
-      // (reserveMinutes above) is 15 minutes — syncing the two would mean
-      // either lengthening the DB hold to 30+ minutes (locking the card from
-      // other buyers longer) or building a "resume checkout" flow (find the
-      // user's latest PENDING order, redirect back to its still-open
-      // session, or create a new one if expired). Deferred as a follow-up;
-      // tracked outside this plan.
+      // expires_at omitted: Stripe's minimum is 30 minutes, longer than our
+      // 15-minute hold. closeLapsedCheckouts expires the session instead.
     }).catch(async (stripeErr) => {
       await releaseCheckoutReservation(buyerId, [order.id], [cardId]);
       throw stripeErr;
@@ -196,6 +198,9 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ url: checkoutSession.url });
   } catch (err) {
+    if (err instanceof CardUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     console.error("[checkout] error:", err);
     return NextResponse.json(
       { error: "Failed to create checkout session" },

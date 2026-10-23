@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { centsToDollars } from "@/lib/money";
-import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay";
+import { listingCatalogInclude, publicReservation, withListingDisplay } from "@/lib/listingDisplay";
 
 // ── GET ───────────────────────────────────────────────────────────────────────
 
@@ -99,6 +99,7 @@ export async function GET() {
               forSale: display.forSale,
               tcgPlayerId: display.tcgPlayerId,
               owner: display.owner,
+              ...publicReservation(item.listing, userId),
             },
           };
         }),

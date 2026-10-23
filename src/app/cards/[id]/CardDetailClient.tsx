@@ -95,6 +95,46 @@ export default function CardDetailClient({
     };
   }, [id, initialCard]);
 
+  // The viewer came back from Stripe without paying — close that checkout
+  // now instead of holding the card for 15 minutes. A reload (or a fresh
+  // visit) shows up as reservedByViewer; the browser's back button usually
+  // restores this page from its cache instead, where no effect re-runs, so
+  // that case is caught by pageshow with persisted=true.
+  useEffect(() => {
+    if (!id) return;
+    const release = () => {
+      buyNowInFlight.current = true;
+      setBuyNowPending(true);
+      fetch("/api/checkout/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardId: id }),
+      })
+        .catch(() => {})
+        .finally(() => {
+          buyNowInFlight.current = false;
+          setBuyNowPending(false);
+        });
+    };
+    if (initialCard?.reservedByViewer) release();
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted && buyNowInFlight.current) release();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [id, initialCard]);
+
+  // Flip "Reserved" back to "Buy Now" when the other buyer's hold runs out.
+  const reservedUntil = card?.reservedUntil;
+  useEffect(() => {
+    if (!reservedUntil) return;
+    const timer = setTimeout(
+      () => setCard((c) => (c ? { ...c, reservedUntil: null } : c)),
+      Math.max(new Date(reservedUntil).getTime() - Date.now(), 0)
+    );
+    return () => clearTimeout(timer);
+  }, [reservedUntil]);
+
   // Fetch the viewer's own offer on this card (non-owners only)
   useEffect(() => {
     if (!id || !userId) return;
@@ -216,6 +256,14 @@ export default function CardDetailClient({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.error("Failed to create checkout session:", data.error);
+        // 409 = someone else reserved or bought it a moment ago — reload the
+        // card so the button shows its real state.
+        if (res.status === 409) {
+          fetch(`/api/cards/${encodeURIComponent(card.id)}`)
+            .then((r) => r.json())
+            .then((d) => { if (d.card) setCard(d.card); })
+            .catch(() => {});
+        }
         setCheckoutError({
           message: data.error || "Failed to start checkout. Please try again.",
           needsVerification: res.status === 403,
@@ -559,6 +607,7 @@ export default function CardDetailClient({
             }
             onBuyNow={() => requireLogin(handleBuyNow)}
             buyNowPending={buyNowPending}
+            reservedUntil={card.reservedUntil}
             onAddToCart={!canManageListing ? handleAddToCart : undefined}
             cartStatus={cartStatus}
             // "Start Auction" only offered when no live auction is running and the

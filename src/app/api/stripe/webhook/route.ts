@@ -51,6 +51,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { prisma } from "@/lib/prisma";
 import { transferCardOwnership, notifySellerCardSold } from "@/lib/webhookHelpers";
+import { releaseCheckoutSession } from "@/lib/checkoutSessions";
 
 // Webhooks must run on Node runtime (Stripe SDK + raw-body signature verification)
 export const runtime = "nodejs";
@@ -552,22 +553,7 @@ async function handleSessionExpired(event: Stripe.Event) {
   const session = event.data.object as Stripe.Checkout.Session;
   console.log(`[webhook] ⌛ Session expired: ${session.id}`);
 
-  // Step 1 + 2 run in a single transaction so they succeed or fail together.
-  // The array form of $transaction is used here (not the interactive callback
-  // form) because the two operations are independent — no reads needed between them.
-  await prisma.$transaction([
-    // Step 1: Mark all pending orders for this session EXPIRED.
-    // Prevents them from lingering as PENDING forever in the DB.
-    prisma.order.updateMany({
-      where: { stripeCheckoutSessionId: session.id, status: "PENDING" },
-      data: { status: "EXPIRED" },
-    }),
-    // Step 2: Release listing reservations.
-    // Clears reservedById / reservedUntil / reservedCheckoutSessionId so the
-    // listings appear as available again and other buyers can purchase them.
-    prisma.listing.updateMany({
-      where: { reservedCheckoutSessionId: session.id },
-      data: { reservedById: null, reservedUntil: null, reservedCheckoutSessionId: null },
-    }),
-  ]);
+  // Marks the session's PENDING orders EXPIRED and frees its listings — the
+  // same cleanup the cancel page and the lapsed-hold cron run.
+  await releaseCheckoutSession(session.id);
 }

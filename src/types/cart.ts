@@ -20,6 +20,9 @@ export interface CartCardSnapshot {
   forSale: boolean;
   tcgPlayerId: string;
   owner: { id: string; username: string | null; email: string };
+  // See publicReservation in src/lib/listingDisplay.ts.
+  reservedUntil?: string | null;
+  reservedByViewer?: boolean;
 }
 
 export interface CartItemData {

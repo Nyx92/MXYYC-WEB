@@ -123,6 +123,22 @@ export function withListingDisplay<T extends ListingWithCatalog>(
   > & ListingDisplayFields;
 }
 
+// Public view of a Buy Now hold. reservedUntil: when another buyer's hold
+// ends (ISO), so the page can show "Reserved" — never who holds it.
+// reservedByViewer: the viewer is the buyer checking out, so their page can
+// close that checkout (they came back from Stripe without paying).
+export function publicReservation(
+  listing: { reservedById: string | null; reservedUntil: Date | null },
+  viewerUserId: string | undefined
+): { reservedUntil: string | null; reservedByViewer: boolean } {
+  const active = listing.reservedUntil != null && listing.reservedUntil > new Date();
+  const byViewer = active && !!viewerUserId && listing.reservedById === viewerUserId;
+  return {
+    reservedUntil: active && !byViewer ? listing.reservedUntil!.toISOString() : null,
+    reservedByViewer: byViewer,
+  };
+}
+
 // Single source of truth for the card-detail page's data, shared by GET
 // /api/cards/[id] (the client's own fetch, used on a client-side navigation
 // between sibling /cards/[id] pages) and the card-detail page's server
@@ -163,6 +179,7 @@ export async function getCardDetailForViewer(
     price: rest.price != null ? centsToDollars(rest.price) : null,
     watchlistCount: _count.watchlist,
     watchlistedByUser,
+    ...publicReservation(listing, viewerUserId),
     // Same vocabulary GET /api/user/cards already uses for this field
     // (minus the collection-request case, not fetched here).
     status: listing.inAuction ? "in_auction" : listing.forSale ? "for_sale" : "available",

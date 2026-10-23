@@ -28,6 +28,8 @@ const mockRecoverStuckAcceptedOffer = vi.hoisted(() => vi.fn());
 // ── STEP 2: Register the fakes ────────────────────────────────────────────────
 
 vi.mock("@/lib/prisma", () => ({ prisma: mockPrisma }));
+const mockCloseLapsedCheckouts = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+vi.mock("@/lib/checkoutSessions", () => ({ closeLapsedCheckouts: mockCloseLapsedCheckouts }));
 vi.mock("@/lib/offerExpiry", () => ({
   expireOffer: mockExpireOffer,
   recoverStuckAcceptedOffer: mockRecoverStuckAcceptedOffer,
@@ -65,6 +67,19 @@ describe("GET /api/cron/expire-offers (Vercel Cron)", () => {
   it("returns 401 when Authorization header is missing", async () => {
     const res = await GET(makeRequest());
     expect(res.status).toBe(401);
+  });
+
+  it("closes lapsed Buy Now / cart checkouts on every run", async () => {
+    mockPrisma.offer.findMany.mockResolvedValue([]);
+    await GET(makeRequest("test-cron-secret"));
+    expect(mockCloseLapsedCheckouts).toHaveBeenCalledWith();
+  });
+
+  it("still expires offers when closing lapsed checkouts fails", async () => {
+    mockCloseLapsedCheckouts.mockRejectedValueOnce(new Error("Stripe down"));
+    mockPrisma.offer.findMany.mockResolvedValue([]);
+    const res = await GET(makeRequest("test-cron-secret"));
+    expect(res.status).toBe(200);
   });
 
   it("returns expired:0 and a message when no offers have passed their deadline", async () => {

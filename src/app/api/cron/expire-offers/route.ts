@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { expireOffer, recoverStuckAcceptedOffer } from "@/lib/offerExpiry";
+import { closeLapsedCheckouts } from "@/lib/checkoutSessions";
 
 /**
  * GET /api/cron/expire-offers  ← called by an external scheduler (cron-job.org)
@@ -25,6 +26,10 @@ import { expireOffer, recoverStuckAcceptedOffer } from "@/lib/offerExpiry";
  *   2. For each one, calls expireOffer() which:
  *        a. Cancels the Stripe PaymentIntent → releases the hold on buyer's card
  *        b. Sets offer status → "expired" in the DB
+ *
+ * It also closes Buy Now / cart checkouts whose 15-minute hold ran out (see
+ * closeLapsedCheckouts) — it rides on this job because it needs the same
+ * every-minute schedule, so no extra cron-job.org job is needed.
  *
  * For local testing:
  *   curl http://localhost:3000/api/cron/expire-offers \
@@ -55,6 +60,12 @@ async function runExpiry(req: NextRequest): Promise<NextResponse> {
   if (authHeader !== `Bearer ${expectedToken}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // ── 1b. Close checkouts whose hold ran out ─────────────────────────────────
+  // Errors are logged per session inside; never let them block offer expiry.
+  await closeLapsedCheckouts().catch((err) =>
+    console.error("[cron/expire-offers] closeLapsedCheckouts failed:", err)
+  );
 
   // ── 2. Find all pending offers that have passed their expiry time ──────────
   // "pending" = seller hasn't responded yet

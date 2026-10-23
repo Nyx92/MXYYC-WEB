@@ -23,6 +23,7 @@ import { listingCatalogInclude, withListingDisplay } from "@/lib/listingDisplay"
 import { requireVerifiedForPurchase } from "@/lib/purchaseVerification";
 import { rateLimitResponse } from "@/lib/rateLimit";
 import { releaseCheckoutReservation } from "@/lib/webhookHelpers";
+import { CardUnavailableError, closeLapsedCheckouts } from "@/lib/checkoutSessions";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2025-02-24.acacia",
@@ -93,6 +94,14 @@ export async function POST(_req: NextRequest) {
       }
     }
 
+    // Close any lapsed earlier hold first — same reason as checkout/route.ts.
+    const sold = await closeLapsedCheckouts(listingIds);
+    if (sold.length > 0) {
+      throw new CardUnavailableError(
+        `"${listingMap.get(sold[0])!.title}" was just sold. Remove it from your cart to continue.`
+      );
+    }
+
     // 15 minutes matches single-item Buy Now checkout (see checkout/route.ts) —
     // a multi-item Stripe checkout page takes at least as long to fill out as
     // a single-item one, so there's no reason to give a cart buyer less time.
@@ -130,7 +139,9 @@ export async function POST(_req: NextRequest) {
         });
 
         if (reserved.count !== 1) {
-          throw new Error(`"${listing.title}" was just reserved by another buyer. Please try again.`);
+          throw new CardUnavailableError(
+            `Another buyer is checking out "${listing.title}" right now. If they don't complete payment, it will be available again within 15 minutes.`
+          );
         }
 
         const order = await tx.order.create({
@@ -179,7 +190,7 @@ export async function POST(_req: NextRequest) {
       payment_method_types: ["card"],
       line_items: lineItems,
       success_url: `${baseUrl}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/cart`,
+      cancel_url: `${baseUrl}/checkout/cancel?from=cart`,
       metadata: {
         checkoutType: "cart",
         buyerId,
@@ -212,6 +223,10 @@ export async function POST(_req: NextRequest) {
 
     return NextResponse.json({ url: checkoutSession.url });
   } catch (err) {
+    // Our own buyer-facing message — safe to return.
+    if (err instanceof CardUnavailableError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     // Log the real error server-side only — never echo err.message back to
     // the client, it can leak internal details (Prisma/Stripe error text).
     console.error("[checkout/cart] error:", err);

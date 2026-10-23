@@ -222,6 +222,11 @@ function CartItemFolder({
                     No longer for sale
                   </Typography>
                 )}
+                {card.forSale && card.reservedUntil && (
+                  <Typography sx={{ fontSize: 12, color: "#b45309", fontWeight: 600, mt: 0.5 }}>
+                    Reserved — another buyer is checking out. Check back in a few minutes.
+                  </Typography>
+                )}
               </Box>
             </Box>
           </Box>
@@ -303,8 +308,20 @@ export default function CartPage() {
     setFetchError(false);
     try {
       const res = await fetch("/api/cart");
-      if (res.ok) setCartData(await res.json());
-      else setFetchError(true);
+      if (!res.ok) {
+        setFetchError(true);
+        return;
+      }
+      let data: CartResponse = await res.json();
+      // The buyer came back from Stripe without paying (back button or
+      // reload) — close that checkout now instead of holding the cards for
+      // 15 minutes, then show the freed cart.
+      if (data.packages.some((p) => p.items.some((i) => i.card.reservedByViewer))) {
+        await fetch("/api/checkout/cancel", { method: "POST" }).catch(() => {});
+        const again = await fetch("/api/cart");
+        if (again.ok) data = await again.json();
+      }
+      setCartData(data);
     } catch {
       setFetchError(true);
     } finally {
@@ -316,6 +333,21 @@ export default function CartPage() {
   // a microtask (same as a .then() callback) so this effect itself never
   // synchronously calls setState. Same-tick defer — no visible timing change.
   useEffect(() => { void Promise.resolve().then(() => loadCart()); }, [loadCart]);
+
+  // The back button from Stripe usually restores this page from the browser's
+  // cache, still showing the checkout spinner and with no effect re-run —
+  // reload the cart (which closes the open checkout, see loadCart).
+  const leftForStripe = useRef(false);
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted || !leftForStripe.current) return;
+      leftForStripe.current = false;
+      setCheckoutLoading(false);
+      void loadCart();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [loadCart]);
 
   // Flatten all items across packages into a single ordered list
   const allItems = useMemo(
@@ -430,6 +462,7 @@ export default function CartPage() {
         setCheckoutNeedsVerification(res.status === 403);
         throw new Error(data.error || "Checkout failed");
       }
+      leftForStripe.current = true;
       window.location.href = data.url;
     } catch (err) {
       setCheckoutError(err instanceof Error ? err.message : "Checkout failed. Please try again.");

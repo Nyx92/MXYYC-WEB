@@ -44,6 +44,11 @@ const mockReleaseCheckoutReservation = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/webhookHelpers", () => ({ releaseCheckoutReservation: mockReleaseCheckoutReservation }));
 const mockRateLimitResponse = vi.hoisted(() => vi.fn((): Response | null => null));
 vi.mock("@/lib/rateLimit", () => ({ rateLimitResponse: mockRateLimitResponse }));
+const mockCloseLapsedCheckouts = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+vi.mock("@/lib/checkoutSessions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/checkoutSessions")>()),
+  closeLapsedCheckouts: mockCloseLapsedCheckouts,
+}));
 
 // ── STEP 3: Import the code under test ───────────────────────────────────────
 
@@ -196,7 +201,16 @@ describe("POST /api/checkout", () => {
     expect(mockReleaseCheckoutReservation).toHaveBeenCalledWith("buyer-1", [expect.any(String)], ["card-1"]);
   });
 
-  it("returns 500 when the card was just reserved by another buyer", async () => {
+  it("returns 409 when a lapsed earlier checkout of the card was in fact paid", async () => {
+    mockCloseLapsedCheckouts.mockResolvedValueOnce(["card-1"]);
+    const res = await POST(makeRequest({ cardId: "card-1" }));
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("This card was just sold.");
+    expect(mockCloseLapsedCheckouts).toHaveBeenCalledWith(["card-1"]);
+    expect(mockStripeInstance.checkout.sessions.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 with a buyer-facing message when the card was just reserved by another buyer", async () => {
     mockPrisma.$transaction.mockImplementation(async (fnOrOps) => {
       if (typeof fnOrOps === "function") {
         const mockTx = {
@@ -210,7 +224,8 @@ describe("POST /api/checkout", () => {
     });
 
     const res = await POST(makeRequest({ cardId: "card-1" }));
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/Another buyer is checking out this card/);
   });
 
   it("reservation query's OR clause only allows never-reserved or expired reservations", async () => {

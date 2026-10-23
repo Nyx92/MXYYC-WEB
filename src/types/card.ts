@@ -27,6 +27,12 @@ export interface CardItem {
   watchlistCount?: number;
   watchlistedByUser?: boolean;
 
+  // Card-detail only (see publicReservation in src/lib/listingDisplay.ts).
+  // reservedUntil: another buyer is checking out until this time.
+  // reservedByViewer: the viewer has an open checkout for this card.
+  reservedUntil?: string | null;
+  reservedByViewer?: boolean;
+
   // Populated by GET /api/user/cards — set while this card is earmarked
   // for in-person collection from the shop. See src/app/myCollection.
   collectionRequestId?: string | null;

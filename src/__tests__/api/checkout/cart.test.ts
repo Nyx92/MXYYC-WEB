@@ -40,6 +40,11 @@ vi.mock("next-auth", () => ({ getServerSession: mockGetServerSession }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 const mockRateLimitResponse = vi.hoisted(() => vi.fn((): Response | null => null));
 vi.mock("@/lib/rateLimit", () => ({ rateLimitResponse: mockRateLimitResponse }));
+const mockCloseLapsedCheckouts = vi.hoisted(() => vi.fn(async (): Promise<string[]> => []));
+vi.mock("@/lib/checkoutSessions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/checkoutSessions")>()),
+  closeLapsedCheckouts: mockCloseLapsedCheckouts,
+}));
 vi.mock("stripe", () => ({ default: mockStripe }));
 
 // ── STEP 3: Import code under test ────────────────────────────────────────────
@@ -178,6 +183,28 @@ describe("POST /api/checkout/cart", () => {
     expect(body.error).toBe("Failed to create checkout session. Please try again.");
   });
 
+  it("returns 409 with our own message when a listing is held by another buyer", async () => {
+    mockPrisma.cart.findUnique.mockResolvedValueOnce(CART);
+    mockPrisma.listing.findMany.mockResolvedValueOnce([LISTING]);
+    const { CardUnavailableError } = await import("@/lib/checkoutSessions");
+    mockPrisma.$transaction.mockRejectedValueOnce(new CardUnavailableError("held"));
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("held");
+  });
+
+  it("returns 409 when a lapsed earlier checkout of a listing was in fact paid", async () => {
+    mockPrisma.cart.findUnique.mockResolvedValueOnce(CART);
+    mockPrisma.listing.findMany.mockResolvedValueOnce([LISTING]);
+    mockCloseLapsedCheckouts.mockResolvedValueOnce([LISTING.id]);
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/was just sold/);
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   // What's being tested: the reservation query's OR clause only allows
   // never-reserved or expired reservations (same guard as single-item
   // checkout — see Task 4).
@@ -283,7 +310,7 @@ describe("POST /api/checkout/cart", () => {
     expect(mockStripeCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         metadata: expect.objectContaining({ checkoutType: "cart", buyerId: "buyer-1" }),
-        cancel_url: expect.stringContaining("/cart"),
+        cancel_url: expect.stringContaining("/checkout/cancel?from=cart"),
         line_items: [
           expect.objectContaining({
             price_data: expect.objectContaining({
