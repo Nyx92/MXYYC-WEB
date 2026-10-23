@@ -19,6 +19,8 @@ const jsonLd = {
       name: "MXYYC",
       url: SITE_URL,
       logo: `${SITE_URL}/icons/icon-512.png`,
+      email: "mxyychua@mxyyc.community",
+      telephone: "+6592954911",
     },
     {
       "@type": "WebSite",

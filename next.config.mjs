@@ -104,6 +104,8 @@ const nextConfig = {
       { source: "/blog/:path*", destination: "/", permanent: true },
       { source: "/category/:path*", destination: "/", permanent: true },
       { source: "/tag/:path*", destination: "/", permanent: true },
+      { source: "/terms-conditions", destination: "/terms", permanent: true },
+      { source: "/privacy-policy", destination: "/privacy", permanent: true },
       { source: "/my-account/:path*", destination: "/profile", permanent: true },
     ];
   },

@@ -163,6 +163,24 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
           </Typography>
           <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
           <Link
+            href="/about-us"
+            color="inherit"
+            underline="hover"
+            fontSize={{ xs: 10, md: 15 }}
+          >
+            About Us
+          </Link>
+          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
+          <Link
+            href="/contact-us"
+            color="inherit"
+            underline="hover"
+            fontSize={{ xs: 10, md: 15 }}
+          >
+            Contact Us
+          </Link>
+          <Box sx={{ mx: { xs: 1, sm: 2 } }}>|</Box>
+          <Link
             href="/terms"
             color="inherit"
             underline="hover"
