@@ -254,10 +254,13 @@ async function issueRefundOnTransferFailure(
     // Step 3: Stamp orders REFUNDED so that if Stripe retries this webhook event,
     // the already-refunded guard in handleSessionCompleted exits cleanly without
     // attempting another transfer or issuing a duplicate refund.
-    // Note: orders are still PENDING here because the DB transaction that would
-    // have marked them PAID was rolled back when the transfer failed.
+    // Note: orders are PENDING here because the DB transaction that would
+    // have marked them PAID was rolled back when the transfer failed — or
+    // EXPIRED, when the hold was already released (closeLapsedCheckouts,
+    // the cancel page, checkout.session.expired) before this payment landed.
+    // Both must become REFUNDED, or a retry would miss the guard above.
     await prisma.order.updateMany({
-      where: { stripeCheckoutSessionId: session.id, status: "PENDING" },
+      where: { stripeCheckoutSessionId: session.id, status: { in: ["PENDING", "EXPIRED"] } },
       data: { status: "REFUNDED" },
     });
 
