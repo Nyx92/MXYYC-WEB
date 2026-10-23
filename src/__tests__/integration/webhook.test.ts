@@ -82,7 +82,9 @@ describe("POST /api/stripe/webhook against a real database", () => {
     const other = await createUser();
     const listing = await createListing(seller.id);
     const lateEvent = await paidCheckout(late.id, listing.id);
-    // The 15-minute hold lapses and a second buyer reserves the card.
+    // The 15-minute hold lapses and a second buyer reserves the card (which
+    // expires the late buyer's session). If a payment still lands — the
+    // safety net — it must be refunded.
     await prisma.listing.update({ where: { id: listing.id }, data: { reservedUntil: new Date(Date.now() - 1000) } });
     await paidCheckout(other.id, listing.id);
 

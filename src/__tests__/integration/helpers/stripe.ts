@@ -6,6 +6,8 @@ import { vi } from "vitest";
 type FakePI = { id: string; status: string; amount: number; metadata: Record<string, string> };
 
 const pis = new Map<string, FakePI>();
+// Checkout Session status, as Stripe reports it: open → complete | expired.
+const sessions = new Map<string, "open" | "complete" | "expired">();
 let seq = 0;
 
 function stateError() {
@@ -19,12 +21,21 @@ export function registerPI(pi: { id: string; amount: number; metadata: Record<st
   return pi.id;
 }
 
+/** The buyer paid on the Stripe page — expire() can no longer close the session. */
+export function completeSession(id: string) {
+  sessions.set(id, "complete");
+}
+
+export function sessionStatus(id: string) {
+  return sessions.get(id);
+}
+
 export function piStatus(id: string) {
   return pis.get(id)?.status;
 }
 
 export const stripe = {
-  checkout: { sessions: { create: vi.fn() } },
+  checkout: { sessions: { create: vi.fn(), expire: vi.fn(), retrieve: vi.fn() } },
   paymentIntents: { retrieve: vi.fn(), capture: vi.fn(), cancel: vi.fn() },
   refunds: { create: vi.fn() },
   // Signature checking is Stripe's job; the test body IS the event.
@@ -33,9 +44,27 @@ export const stripe = {
 
 export function resetStripe() {
   pis.clear();
+  sessions.clear();
   stripe.checkout.sessions.create.mockReset().mockImplementation(async () => {
     const id = `cs_test_${++seq}`;
+    sessions.set(id, "open");
     return { id, url: `https://checkout.stripe.test/${id}` };
+  });
+  const missingSession = (id: string) =>
+    Object.assign(new Error(`No such checkout session: ${id}`), { code: "resource_missing" });
+  stripe.checkout.sessions.expire.mockReset().mockImplementation(async (id: string) => {
+    const status = sessions.get(id);
+    if (!status) throw missingSession(id);
+    if (status !== "open") {
+      throw Object.assign(new Error("Only open Checkout Sessions can be expired"), { code: "checkout_session_not_open" });
+    }
+    sessions.set(id, "expired");
+    return { id, status: "expired" };
+  });
+  stripe.checkout.sessions.retrieve.mockReset().mockImplementation(async (id: string) => {
+    const status = sessions.get(id);
+    if (!status) throw missingSession(id);
+    return { id, status };
   });
   stripe.paymentIntents.retrieve.mockReset().mockImplementation(async (id: string) => {
     const pi = pis.get(id);

@@ -6,7 +6,7 @@ import { POST as createCollectionRequest } from "@/app/api/collection-requests/r
 import { createListing, createUser } from "./helpers/factories";
 import { loginAs, loginQueue } from "./helpers/session";
 import { req, statuses } from "./helpers/http";
-import { stripe } from "./helpers/stripe";
+import { completeSession, sessionStatus, stripe } from "./helpers/stripe";
 
 const buyNow = (cardId: string) => checkout(req("/api/checkout", { cardId }));
 
@@ -19,7 +19,8 @@ describe("POST /api/checkout (Buy Now) against a real database", () => {
     loginQueue(a.id, b.id);
     const res = await Promise.all([buyNow(listing.id), buyNow(listing.id)]);
 
-    expect(statuses(res)).toEqual([200, 500]);
+    // The loser gets a 409 with a message it can show the buyer.
+    expect(statuses(res)).toEqual([200, 409]);
     const orders = await prisma.order.findMany({ where: { listingId: listing.id } });
     expect(orders).toHaveLength(1);
     expect(orders[0].status).toBe("PENDING");
@@ -27,6 +28,59 @@ describe("POST /api/checkout (Buy Now) against a real database", () => {
     expect(after.reservedById).toBe(orders[0].buyerId);
     expect(after.reservedCheckoutSessionId).toBe(orders[0].stripeCheckoutSessionId);
     expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("a buyer checking out again replaces their own earlier checkout", async () => {
+    const seller = await createUser();
+    const buyer = await createUser();
+    const listing = await createListing(seller.id);
+
+    loginAs(buyer.id);
+    expect((await buyNow(listing.id)).status).toBe(200);
+    const first = (await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } })).reservedCheckoutSessionId!;
+    loginAs(buyer.id);
+    expect((await buyNow(listing.id)).status).toBe(200);
+
+    expect(sessionStatus(first)).toBe("expired");
+    const after = await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } });
+    expect(after.reservedById).toBe(buyer.id);
+    expect(after.reservedCheckoutSessionId).not.toBe(first);
+    const orders = await prisma.order.findMany({ where: { listingId: listing.id }, orderBy: { createdAt: "asc" } });
+    expect(orders.map((o) => o.status)).toEqual(["EXPIRED", "PENDING"]);
+  });
+
+  it("a lapsed hold: the old session is closed and the next buyer reserves", async () => {
+    const seller = await createUser();
+    const [a, b] = await Promise.all([createUser(), createUser()]);
+    const listing = await createListing(seller.id);
+
+    loginAs(a.id);
+    expect((await buyNow(listing.id)).status).toBe(200);
+    const old = (await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } })).reservedCheckoutSessionId!;
+    await prisma.listing.update({ where: { id: listing.id }, data: { reservedUntil: new Date(Date.now() - 1000) } });
+    loginAs(b.id);
+    expect((await buyNow(listing.id)).status).toBe(200);
+
+    expect(sessionStatus(old)).toBe("expired");
+    expect((await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } })).reservedById).toBe(b.id);
+  });
+
+  it("a lapsed hold whose session was in fact paid: the next buyer is told it sold", async () => {
+    const seller = await createUser();
+    const [a, b] = await Promise.all([createUser(), createUser()]);
+    const listing = await createListing(seller.id);
+
+    loginAs(a.id);
+    expect((await buyNow(listing.id)).status).toBe(200);
+    const paid = (await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } })).reservedCheckoutSessionId!;
+    completeSession(paid);
+    await prisma.listing.update({ where: { id: listing.id }, data: { reservedUntil: new Date(Date.now() - 1000) } });
+    loginAs(b.id);
+    const res = await buyNow(listing.id);
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("This card was just sold.");
+    expect((await prisma.listing.findUniqueOrThrow({ where: { id: listing.id } })).reservedById).toBe(a.id);
   });
 
   it("refuses a listing that is in an auction", async () => {
