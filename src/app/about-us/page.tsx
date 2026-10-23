@@ -57,6 +57,20 @@ export default function AboutPage() {
         Questions about a card, an order, or selling with us?{" "}
         <a href="/contact-us">Contact us</a> — we&rsquo;re happy to help.
       </p>
+
+      {/* Site credit — same wording and placement as the other WaveSEO-built sites. */}
+      <div style={{ borderTop: "1px solid #e5e7eb", marginTop: 40 }}>
+        <h2>About this website</h2>
+        <p>
+          Our website was designed and built by{" "}
+          <a href="https://waveseo.co" target="_blank" rel="noopener">
+            WaveSEO
+          </a>
+          , a team that builds websites and grows businesses online. They
+          helped us bring our card marketplace, live auctions, and secure
+          checkout together in one place.
+        </p>
+      </div>
     </LegalPage>
   );
 }
