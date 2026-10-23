@@ -26,6 +26,7 @@ import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNone
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import DocumentScannerOutlinedIcon from "@mui/icons-material/DocumentScannerOutlined";
 import { useAuth } from "@/app/hooks/useAuth";
+import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
 
 // ── Nav items ─────────────────────────────────────────────────────────────────
 // Add new account-section pages here — they will appear in the sidebar
@@ -63,9 +64,9 @@ export default function ProfileSidebar() {
         p: 1.5,
         alignSelf: "flex-start",
         // Keeps the sidebar in view as the right panel scrolls.
-        // top = navbar height (64px) + page top padding (24px)
+        // top = navbar height + page top padding (24px)
         position: "sticky",
-        top: 88,
+        top: NAVBAR_HEIGHT + 24,
       }}
     >
       {/* ── Account label ── */}

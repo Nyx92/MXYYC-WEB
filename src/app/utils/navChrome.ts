@@ -1,7 +1,15 @@
-// Height of the fixed AppBar in Navbar.tsx — kept in sync with its `height: 64`
-// sx value and layout.tsx's `paddingTop: "64px"`. Referenced by pages that pull
-// their content up under the navbar (see pageBackgroundSx usage).
-export const NAVBAR_HEIGHT = 64;
+// "Test phase" notice shown under the navbar on every page, so visitors don't
+// take the listings for real cards on sale. Set to false at launch.
+export const SHOW_TEST_BANNER = true;
+export const TEST_BANNER_HEIGHT = SHOW_TEST_BANNER ? 36 : 0;
+
+// Height of the navbar's own bar (logo, icons, login).
+export const NAVBAR_BAR_HEIGHT = 64;
+
+// Total height of the fixed AppBar in Navbar.tsx (bar + test banner) — used by
+// layout.tsx's top padding and by pages that pull their content up under the
+// navbar (see pageBackgroundSx usage).
+export const NAVBAR_HEIGHT = NAVBAR_BAR_HEIGHT + TEST_BANNER_HEIGHT;
 
 // Frosted-glass pill styling for the primary nav Tabs (Marketplace/Auctions/etc),
 // shared by the homepage, marketplace, and auctions pages so they stay visually

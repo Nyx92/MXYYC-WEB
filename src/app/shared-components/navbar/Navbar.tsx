@@ -27,7 +27,8 @@ import SellOutlinedIcon from "@mui/icons-material/SellOutlined";
 import LogoutIcon from "@mui/icons-material/Logout";
 import ShoppingCartOutlinedIcon from "@mui/icons-material/ShoppingCartOutlined";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
-import { NAVBAR_HEIGHT } from "@/app/utils/navChrome";
+import ScienceOutlinedIcon from "@mui/icons-material/ScienceOutlined";
+import { NAVBAR_HEIGHT, NAVBAR_BAR_HEIGHT, SHOW_TEST_BANNER, TEST_BANNER_HEIGHT } from "@/app/utils/navChrome";
 import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import DocumentScannerOutlinedIcon from "@mui/icons-material/DocumentScannerOutlined";
@@ -96,7 +97,7 @@ export default function Navbar() {
         overflow: "visible",
       }}
     >
-      <Container maxWidth="xl" sx={{ height: "100%" }}>
+      <Container maxWidth="xl" sx={{ height: NAVBAR_BAR_HEIGHT }}>
         <Toolbar disableGutters sx={{ height: "100%" }}>
 
           {/* ── Logo ──────────────────────────────────────────────────────── */}
@@ -347,6 +348,37 @@ export default function Navbar() {
           </Box>
         </Toolbar>
       </Container>
+      {SHOW_TEST_BANNER && (
+        <Box
+          role="note"
+          sx={{
+            height: TEST_BANNER_HEIGHT,
+            px: 2,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 1,
+            backgroundColor: "#fbbf24",
+            color: "#1f2937",
+          }}
+        >
+          <ScienceOutlinedIcon sx={{ fontSize: 18, flexShrink: 0 }} />
+          <Typography
+            sx={{
+              fontSize: { xs: 11, sm: 13 },
+              lineHeight: 1.25,
+              fontWeight: 600,
+              textAlign: "center",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            Test phase: this site is still being tested. Cards listed here are not actually for sale, and no orders will be fulfilled.
+          </Typography>
+        </Box>
+      )}
     </AppBar>
   );
 }
