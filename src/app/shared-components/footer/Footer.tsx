@@ -9,6 +9,7 @@ import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import SendOutlinedIcon from "@mui/icons-material/SendOutlined";
 import InstagramIcon from "@mui/icons-material/Instagram";
+import FacebookIcon from "@mui/icons-material/Facebook";
 import FavoriteIcon from "@mui/icons-material/Favorite";
 
 // Layout follows the other WaveSEO-built sites (Mongolia Nomad Tours): a
@@ -183,6 +184,9 @@ const Footer = forwardRef<HTMLDivElement>((_, ref) => {
           <ColumnTitle>Follow Us</ColumnTitle>
           <IconRow icon={<InstagramIcon />} href="https://www.instagram.com/mxyycards" external>
             @mxyycards
+          </IconRow>
+          <IconRow icon={<FacebookIcon />} href="https://www.facebook.com/profile.php?id=61553535959493" external>
+            Facebook
           </IconRow>
         </Box>
       </Container>

@@ -120,7 +120,7 @@ export default function DuckReveal() {
               fontFamily: "'Segoe UI', system-ui, sans-serif",
             }}
           >
-            Your Trusted Pokémon TCG Marketplace
+            Your trusted TCG Marketplace
           </Typography>
 
           <Typography
